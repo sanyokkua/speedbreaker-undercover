@@ -54,7 +54,8 @@ regions and the PC, PS3, PS2 and Wii versions don't work. No game files are incl
    You can delete the ISO afterwards. Saves and settings live in that folder too.
 
 Settings: **F1** or **Cmd+,**, or Back + Start on a controller. On an M1 Pro, keep Internal
-Resolution on **Auto** (1.5x); 2x costs too much GPU time in this game. For the console's
+Resolution on **Auto** (1.5x); 2x costs too much GPU time in this game, and 1x holds 60 fps
+nearly everywhere. For the console's
 picture, leave **HDR Output off** and **Xbox 360 Display Gamma on**.
 
 **Known issues:**
@@ -62,6 +63,7 @@ picture, leave **HDR Output off** and **Xbox 360 Display Gamma on**.
 - Busy races and free roam run between 30 and 60 fps on an M1 Pro: the GPU is the limit.
 - Rarely the game may close in its first seconds (about 1 start in 40 before a guard was
   added); start it again.
+- Now and then a sign, a building's texture or the car paint's reflection disappears for one frame.
 - With HDR Output on, the brightest whites clip.
 - Smoke in front of cars can look slightly off.
 - No Language setting: the menus follow the disc's language.

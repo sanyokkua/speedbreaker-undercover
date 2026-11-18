@@ -69,6 +69,18 @@ The build is `-DSB_GAME=undercover`. It defines `SB_GAME_CARBON`, `SB_GAME_PROST
 - **Not applicable:** Shadow Resolution. Undercover has no 1600x1600 sun shadow map (its depth
   targets are 1280 and 1040 wide), so the row is hidden.
 
+## Single-frame object flicker (open)
+
+Now and then a sign, a building's texture or the car paint's reflection disappears for one frame
+(seen in a 60 fps screen recording: the Jason T's signs at 3.1 s). Ruled out, each by a run with
+it switched off and the flicker still there: the dynamic texture copies
+(`NFSMW_DYNAMIC_TEXTURE_GAP=2`), the vertex copies (`NFSMW_DYNAMIC_SNAPSHOTS=0`), scaled resolves
+stored into textures (`NFSMW_SCALED_FUSE=0`), occlusion queries (`NFSMW_OCCLUSION_FAKE=1000`),
+untiled rendering (`NFSMW_TILING=1`) and upscaling (`NFSMW_RESOLUTION=1x`); bin predication
+(`SET_BIN_MASK`/`SET_BIN_SELECT`) drops only draws of masks the game never selects. Not reproduced
+with frame dumps (they slow the game). Suspected: the render thread and the render jobs (the
+boot crash's pair) building a frame's lists at once, which the console's scheduling prevents.
+
 ## Feature parity
 
 Found by matching ProStreet's code:

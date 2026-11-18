@@ -35,6 +35,9 @@ the first time a new version starts (offline: it's built into the game).
 - Rarely (about 1 start in 40 in testing) the game could close in its first seconds: a guard now
   skips the one copy it crashed on, but the cause (two game threads the console never runs at
   once) remains; if it still closes, start it again.
+- Now and then a sign, a building's texture or the paint's reflection disappears for a single
+  frame. Not caused by the renderer (ruled out one by one); most likely the game's render jobs
+  and render thread running at the same time, as they never do on the console.
 - With HDR Output on, the brightest whites clip (the game's calibration screen loses its faintest
   line): leave HDR Output off for the console's picture.
 - Online play (offline only, as in the other SpeedBreaker games); split screen hasn't been looked
