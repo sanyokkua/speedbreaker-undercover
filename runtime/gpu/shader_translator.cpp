@@ -720,6 +720,58 @@ float xmul(float a, float b)
                     }
                     return;
                 }
+                if (op.opcode() == FetchOpcode::kGetTextureWeights)
+                {
+                    // getWeights (NFS: Undercover's car and road pixel
+                    // shaders): the bilinear lerp factors of the coordinates,
+                    // fract(texel coordinates + offset - 0.5) in x, y (and z
+                    // for 3D), as Xenia's ucode.h describes them; 0 where the
+                    // instruction forces point filtering. W, the mip lerp
+                    // factor, is 0 (one LOD).
+                    if (op.is_predicated())
+                    {
+                        Line(std::format("if (p0 == {}) {{", op.predicate_condition() ? "true" : "false"));
+                        indent++;
+                    }
+                    Line("{");
+                    indent++;
+                    std::string src = Reg(op.src(), op.is_src_relative());
+                    uint32_t sw = op.src_swizzle();
+                    auto coord = [&](int i) { return src + "." + kComp[(sw >> (2 * i)) & 3]; };
+                    const bool point = op.has_mag_filter() && op.mag_filter() == xenos::TextureFilter::kPoint;
+                    const uint32_t slot = op.fetch_constant_index();
+                    if (point)
+                    {
+                        Line("vec4 tdata = vec4(0.0);");
+                    }
+                    else if (op.dimension() == xenos::FetchOpDimension::k3DOrStacked)
+                    {
+                        out.texture3DMask |= 1u << slot;
+                        std::string t = "vec3(" + coord(0) + ", " + coord(1) + ", " + coord(2) + ")";
+                        if (!op.unnormalized_coordinates())
+                            t = std::format("({}) * vec3(textureSize(t3d_{}, 0))", t, slot);
+                        Line(std::format("vec3 wt = fract({} + vec3({}, {}, {}) - 0.5);", t, op.offset_x(), op.offset_y(), op.offset_z()));
+                        Line("vec4 tdata = vec4(wt, 0.0);");
+                    }
+                    else
+                    {
+                        std::string t = op.dimension() == xenos::FetchOpDimension::k1D
+                            ? "vec2(" + coord(0) + ", 0.5)" : "vec2(" + coord(0) + ", " + coord(1) + ")";
+                        if (!op.unnormalized_coordinates())
+                            t = std::format("({}) * fetchSize2D({}u)", t, slot);
+                        Line(std::format("vec2 wt = fract({} + vec2({}, {}) - 0.5);", t, op.offset_x(), op.offset_y()));
+                        Line(op.dimension() == xenos::FetchOpDimension::k1D ? "vec4 tdata = vec4(wt.x, 0.0, 0.0, 0.0);" : "vec4 tdata = vec4(wt, 0.0, 0.0);");
+                    }
+                    StoreFetchResult(op.dest(), op.is_dest_relative(), op.dest_swizzle(), "tdata");
+                    indent--;
+                    Line("}");
+                    if (op.is_predicated())
+                    {
+                        indent--;
+                        Line("}");
+                    }
+                    return;
+                }
                 if (op.opcode() != FetchOpcode::kTextureFetch)
                 {
                     Error(std::format("texture fetch opcode {} not implemented yet", uint32_t(op.opcode())));
