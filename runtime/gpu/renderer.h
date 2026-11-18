@@ -90,6 +90,8 @@ namespace gpu::renderer
     // `shift`: a real picture shown that much of a vblank early (a step drawn
     // only between, its own picture's fraction minus 1; 0 otherwise).
     // `target`: when to show it (video::SubmitFrontImage's).
+    // The draw log's frame boundary (Cmd+D, NFSMW_DRAW_LOG_AT), once a swap.
+    void DrawLogOnSwap();
     bool PresentFrontBuffer(const uint32_t fetch[6], uint32_t width, uint32_t height, float between = 0.0f, float shift = 0.0f,
         int64_t target = 0);
 

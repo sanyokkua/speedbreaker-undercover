@@ -537,6 +537,8 @@ namespace gpu
                     if (between == 0.0f)
                     {
                         renderer::Flush();
+                        if (dumping)
+                            renderer::DrawLogOnSwap();
                         video::SubmitFrontBuffer(&s_regs[0x4800], width, height);
                     }
                 }

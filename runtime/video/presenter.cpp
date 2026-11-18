@@ -4313,6 +4313,8 @@ void main()
         {
             char path[512];
             snprintf(path, sizeof(path), "%s/frame_%05u.ppm", dumpDir, thisFrame);
+            if (dumpEvery == 1)
+                fprintf(stderr, "[dump] %s\n", path);
             if (FILE* f = fopen(path, "wb"))
             {
                 fprintf(f, "P6\n%u %u\n255\n", width, height);

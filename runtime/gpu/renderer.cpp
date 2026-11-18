@@ -4962,8 +4962,14 @@ void main()
                     // each slice with its own load; a tiled one interleaves
                     // them, so it stays guarded.
                     const bool linearVolume = volume && !f.tiled && layers == 1;
+                    // Never memory the GPU writes (a resolve: the scene,
+                    // 04419000 in Undercover): guest memory may not hold the
+                    // resolve yet when the load is recorded, and a copy then
+                    // gave the tonemap a stale scene, a frame overexposed or
+                    // dark (the vertex snapshots' rule).
                     const bool snapshot = dynamicTextures && s_frame < t.dynamicUntil && !mipSize &&
-                        (layers * depth == 1 || linearVolume) && size <= kDynamicTextureMax && !s_shadowMode;
+                        (layers * depth == 1 || linearVolume) && size <= kDynamicTextureMax && !s_shadowMode &&
+                        !writewatch::GpuWritePending(base, size) && !writewatch::AnyGpuOwned(base, size);
                     if (snapshot && t.dynamicUntil == s_frame + kDynamicFrames && s_frame - t.loadFrame == 0)
                     {
                         static uint32_t logged = 0;
@@ -10333,7 +10339,18 @@ void main()
             // kDynamicFrames, then is guarded once to look again. Static
             // meshes never move and stay guarded, never copied.
             // NFSMW_DYNAMIC_SNAPSHOTS=0: only kSnapshotMax, as before.
-            constexpr uint32_t kDynamicSnapshotMax = 512 * 1024;
+            // NFS: Undercover refills a 600 KB one (sub_8291CD20) every
+            // frame in a chase, guarded: ~16-35 ms stalls about once a frame.
+            // NFSMW_DYNAMIC_SNAPSHOT_KB overrides the limit.
+#if defined(SB_GAME_UNDERCOVER)
+            constexpr uint32_t kDynamicSnapshotDefault = 1024 * 1024;
+#else
+            constexpr uint32_t kDynamicSnapshotDefault = 512 * 1024;
+#endif
+            static const uint32_t kDynamicSnapshotMax = [] {
+                const char* v = std::getenv("NFSMW_DYNAMIC_SNAPSHOT_KB");
+                return v && std::atoi(v) > 0 ? uint32_t(std::atoi(v)) * 1024u : kDynamicSnapshotDefault;
+            }();
             constexpr uint64_t kDynamicFrames = 300;
             static const bool dynamicSnapshots = [] { const char* v = std::getenv("NFSMW_DYNAMIC_SNAPSHOTS"); return !v || v[0] != '0'; }();
             struct DynamicRange { uint64_t sequence = 0, until = 0; };
@@ -11992,23 +12009,46 @@ void main()
         fprintf(stderr, "[zpd] %s: latest END counts:%s\n", what, line.empty() ? " none yet" : line.c_str());
     }
 
-    bool PresentFrontBuffer(const uint32_t fetch[6], uint32_t width, uint32_t height, float between, float shift, int64_t target)
+    // The draw log's frame boundary, once a swap: from PresentFrontBuffer,
+    // or the command processor's CPU present path (frame dumps).
+    void DrawLogOnSwap()
     {
-        if (!s_vk || width == 0 || height == 0)
-            return false;
         // NFSMW_DRAW_LOG_AT=<s>: as Cmd+D, once, that many seconds after launch.
         static const double s_drawLogAt = [] { const char* v = std::getenv("NFSMW_DRAW_LOG_AT"); return v ? std::atof(v) : -1.0; }();
         static const auto s_launch = std::chrono::steady_clock::now();
-        if (static bool done = false; !done && s_drawLogAt >= 0 &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - s_launch).count() >= s_drawLogAt)
+        // NFSMW_DRAW_LOG_FRAME=<n>: once, at that frame (s_frame) instead.
+        static const int64_t s_drawLogFrame = [] { const char* v = std::getenv("NFSMW_DRAW_LOG_FRAME"); return v ? int64_t(std::atoll(v)) : int64_t(-1); }();
+        if (static bool done = false; !done && ((s_drawLogAt >= 0 &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - s_launch).count() >= s_drawLogAt) ||
+            (s_drawLogFrame >= 0 && int64_t(s_frame) >= s_drawLogFrame)))
         {
             done = true;
             RequestDrawLog();
         }
+        // NFSMW_DRAW_LOG_FRAMES=<n>: that many consecutive frames per log
+        // (one by default), each ended by its own line.
+        static const int s_drawLogFrames = [] { const char* v = std::getenv("NFSMW_DRAW_LOG_FRAMES"); return v && std::atoi(v) > 1 ? std::atoi(v) : 1; }();
+        static int s_drawLogLeft = 0;
         if (int armed = 1; s_drawLog.compare_exchange_strong(armed, 2))
+        {
             s_drawLogIndex = 0;
-        else if (int logging = 2; s_drawLog.compare_exchange_strong(logging, 0))
-            fprintf(stderr, "[drawlog] end of the frame (%u draws and resolves)\n", s_drawLogIndex);
+            s_drawLogLeft = s_drawLogFrames;
+        }
+        else if (s_drawLog.load() == 2)
+        {
+            fprintf(stderr, "[drawlog] end of the frame %llu (%u draws and resolves)\n", (unsigned long long)s_frame, s_drawLogIndex);
+            if (--s_drawLogLeft > 0)
+                s_drawLogIndex = 0;
+            else
+                s_drawLog.store(0);
+        }
+    }
+
+    bool PresentFrontBuffer(const uint32_t fetch[6], uint32_t width, uint32_t height, float between, float shift, int64_t target)
+    {
+        if (!s_vk || width == 0 || height == 0)
+            return false;
+        DrawLogOnSwap();
         // NFSMW_SHOW_TEXTURE=<hex base>,<width>,<height>: present that tiled
         // 32-bit guest texture instead of the front buffer (debugging).
         static const std::array<uint32_t, 3> showTexture = [] {
