@@ -50,7 +50,8 @@ picture, leave **HDR Output off** and **Xbox 360 Display Gamma on**.
 **Known issues:**
 
 - Busy races and free roam run between 30 and 60 fps on an M1 Pro: the GPU is the limit.
-- Rarely (about 1 start in 40) the game closes in its first seconds; start it again.
+- Rarely the game may close in its first seconds (about 1 start in 40 before a guard was
+  added); start it again.
 - With HDR Output on, the brightest whites clip.
 - Smoke in front of cars can look slightly off.
 - No Language setting: the menus follow the disc's language.

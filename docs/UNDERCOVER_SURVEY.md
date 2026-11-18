@@ -39,9 +39,14 @@ The build is `-DSB_GAME=undercover`. It defines `SB_GAME_CARBON`, `SB_GAME_PROST
   every thread claimed processor 0 and the jobs crashed within seconds. The runtime now sets it,
   and keeps it for a suspended thread until it starts.
 - `GetExitCodeThread`'s XAPI wrapper: `sub_82D5BCA8`.
-- **Still open:** about 1 boot in 40 crashes in its first 2 seconds in D3D state
-  (`sub_82935280`, device `A5C80780`). The two threads involved share one hardware thread on the
-  console and never run at the same time; on a Mac they do.
+- **Still open (guarded):** about 1 boot in 40 crashed in its first 2 seconds in
+  `D3DDevice_Resolve` (`sub_82935280`), reading a null depth-stencil surface (device +0x30A8).
+  The render thread (processor 0) and the render jobs (`sub_82751068`, processors 1, 3 and 5)
+  both run `sub_8275A5B0`, which sets the depth-stencil surface and resolves it; the owner field
+  at device +10888 is only a debug check, and the game's frame handshake keeps them apart on the
+  console but not on a Mac. `runtime/game/undercover/d3d_resolve.cpp` skips a resolve whose source
+  surface is null. 60 boots afterwards: no crash, but the guard never fired either, so it is
+  unproven.
 
 ## Graphics
 

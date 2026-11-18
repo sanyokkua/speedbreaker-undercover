@@ -32,7 +32,9 @@ the first time a new version starts (offline: it's built into the game).
 
 - Busy races and free roam run between 30 and 60 fps on an M1 Pro (the GPU is the limit). Auto
   frame rate holds a steady 30 there.
-- Rarely (about 1 start in 40) the game closes in its first seconds; start it again.
+- Rarely (about 1 start in 40 in testing) the game could close in its first seconds: a guard now
+  skips the one copy it crashed on, but the cause (two game threads the console never runs at
+  once) remains; if it still closes, start it again.
 - With HDR Output on, the brightest whites clip (the game's calibration screen loses its faintest
   line): leave HDR Output off for the console's picture.
 - Online play (offline only, as in the other SpeedBreaker games); split screen hasn't been looked
