@@ -4944,7 +4944,15 @@ void main()
                     // reload within kDynamicGapFrames of the last makes it
                     // dynamic for kDynamicFrames. NFSMW_DYNAMIC_TEXTURES=0: off.
                     constexpr uint32_t kDynamicTextureMax = 4u << 20;
+                    // NFS: Undercover also streams textures into the same
+                    // slots every 2-6 s in free roam (sub_8291CD20,
+                    // sub_82912CC8): guarded, each new one waited ~10-20 ms
+                    // for the GPU, so there a reload within 600 frames counts.
+#if defined(SB_GAME_UNDERCOVER)
+                    constexpr uint64_t kDynamicGapFrames = 600, kDynamicFrames = 300;
+#else
                     constexpr uint64_t kDynamicGapFrames = 2, kDynamicFrames = 300;
+#endif
                     static const bool dynamicTextures = [] { const char* v = std::getenv("NFSMW_DYNAMIC_TEXTURES"); return !v || v[0] != '0'; }();
                     if (t.uploaded && s_frame - t.loadFrame <= kDynamicGapFrames)
                         t.dynamicUntil = s_frame + kDynamicFrames;
