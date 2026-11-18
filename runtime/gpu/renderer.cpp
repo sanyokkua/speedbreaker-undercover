@@ -10342,9 +10342,18 @@ void main()
                 const char* v = std::getenv("NFSMW_DYNAMIC_SNAPSHOT_KB");
                 return v && std::atoi(v) > 0 ? uint32_t(std::atoi(v)) * 1024u : kDynamicSnapshotDefault;
             }();
-            constexpr uint64_t kDynamicFrames = 300;
+            // Each recheck that finds the range rewritten again doubles its
+            // period (up to 64x): the recheck is guarded, and the CPU's next
+            // write stalls ~20 ms for the GPU. NFS: Undercover's
+            // sub_8291CD20/sub_82912CC8 buffers stalled once each every
+            // 300 frames, about two hitches a second in free roam.
+            constexpr uint64_t kDynamicFrames = 300, kDynamicFramesMax = 300 * 64;
             static const bool dynamicSnapshots = [] { const char* v = std::getenv("NFSMW_DYNAMIC_SNAPSHOTS"); return !v || v[0] != '0'; }();
-            struct DynamicRange { uint64_t sequence = 0, until = 0; };
+            // copying until `until`, then checking (guarded) until a write
+            // moves the sequence (copy again, twice as long) or 60 quiet
+            // frames pass (static again).
+            enum class DynamicState : uint8_t { kStatic, kCopying, kChecking };
+            struct DynamicRange { uint64_t sequence = 0, until = 0, period = kDynamicFrames; DynamicState state = DynamicState::kStatic; };
             static std::unordered_map<uint32_t, DynamicRange> dynamicRanges;  // by base (command processor only)
             auto dynamicVertices = [&](uint32_t base, uint32_t size) {
                 if (!dynamicSnapshots || size > kDynamicSnapshotMax)
@@ -10352,14 +10361,32 @@ void main()
                 if (dynamicRanges.size() > 4096)
                     dynamicRanges.clear();
                 DynamicRange& d = dynamicRanges[base];
-                if (d.until > s_frame)
+                if (d.state == DynamicState::kCopying && d.until > s_frame)
                     return true;
                 const uint64_t sequence = writewatch::WriteSequence(base, size);
                 const bool moved = d.sequence != 0 && sequence != d.sequence;
                 d.sequence = sequence;
-                if (!moved)
+                if (d.state == DynamicState::kCopying)
+                {
+                    // Copying ended: guard it again to see whether it is still
+                    // written (its writes went unseen while copied).
+                    d.state = DynamicState::kChecking;
+                    d.until = s_frame + 60;
                     return false;
-                d.until = s_frame + kDynamicFrames;
+                }
+                if (!moved)
+                {
+                    if (d.state == DynamicState::kChecking && d.until <= s_frame)
+                    {
+                        d.state = DynamicState::kStatic;
+                        d.period = kDynamicFrames;
+                    }
+                    return false;
+                }
+                if (d.state == DynamicState::kChecking)
+                    d.period = std::min(d.period * 2, kDynamicFramesMax);
+                d.state = DynamicState::kCopying;
+                d.until = s_frame + d.period;
                 return true;
             };
             using Range = SnapshotRange;
