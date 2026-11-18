@@ -58,6 +58,8 @@ data_ranges = [
 # that lie inside another function. Do not edit by hand; rerun.
 secondary_entries = [
     0x822E87D0,  # referenced from code; leaf code
+    0x8242BD98,  # referenced from data; leaf code
+    0x82679700,  # referenced from data; leaf code
     0x82D304AC,  # referenced from data; in .pdata fn 0x82D303B0
     0x82D3ED00,  # referenced from data; in .pdata fn 0x82D3EC58
     0x82D427A4,  # referenced from data; in .pdata fn 0x82D42758
@@ -248,3 +250,38 @@ functions = [
     { address = 0x82938450, size = 0x18 },
 ]
 # --- end leaf_switch_bounds ---
+
+# Game time in whole vblanks (runtime/game/undercover/frame_time.cpp): the
+# frame's measured time (ms, 16.16) as the main loop (sub_82617778) passes it
+# to the frame (sub_82617660) ...
+[[midasm_hook]]
+name = "GameFrameTime"
+address = 0x826178DC
+registers = ["r3"]
+
+# ... the world's step count, just truncated from the accumulated seconds
+# (sub_8279DFF0, `cmpwi cr6,r11,1`; f0 = the seconds) ...
+[[midasm_hook]]
+name = "WorldStepCount"
+address = 0x8279E074
+registers = ["r11", "f0"]
+
+# ... and the return below one step, counted for the [perf] line.
+[[midasm_hook]]
+name = "WorldNoStep"
+address = 0x8279E044
+
+# Hor+ and Vert+ (runtime/game/undercover/ultrawide.cpp): the projection's x
+# and y scales (f24, f2) before their first store in sub_823C5A38 (r29 = the
+# view, its id at +4) ...
+[[midasm_hook]]
+name = "UltrawideProjection"
+address = 0x823C5D60
+registers = ["r29", "f24", "f2"]
+
+# ... and the front-end (HUD) matrix's x and y scales (f13, f0), at the
+# branch that ends its widescreen case (sub_8275C7E8).
+[[midasm_hook]]
+name = "UltrawideFrontEnd"
+address = 0x8275C8E8
+registers = ["f13", "f0"]

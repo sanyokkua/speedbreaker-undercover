@@ -52,7 +52,11 @@ for a in range(TEXT[0], TEXT[1], 4):
 
 def entry_like(v):
     p = word(v - 4)
-    return p == 0x4E800020 or p == 0 or (p >> 26 == 18 and p & 3 == 0)
+    # blr, padding, b; or bctr (a tail call through a pointer) when the
+    # address is stored in data: NFS: Undercover's vtable thunks run straight
+    # into the next method, which a vtable names.
+    return p == 0x4E800020 or p == 0 or (p >> 26 == 18 and p & 3 == 0) or \
+        (p == 0x4E800420 and any(k == 'data' for k, _ in refs[v]))
 
 cand = sorted(v for v in refs if v not in fnstarts and v not in labels and entry_like(v))
 print(f'{len(refs)} referenced code addresses; {len(cand)} entry-like and not function starts', file=sys.stderr)
