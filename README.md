@@ -26,6 +26,16 @@ M1 Pro (the Xbox 360 itself runs the game at 30). But:
 How the port was made: [docs/UNDERCOVER_SURVEY.md](docs/UNDERCOVER_SURVEY.md).
 Changes per version: [CHANGELOG-undercover.md](CHANGELOG-undercover.md).
 
+## Screenshots
+
+From the author's play on an M1 Pro (Internal Resolution Auto, with the frame-rate overlay on).
+
+| | |
+|---|---|
+| ![Free roam by the bay](docs/screenshots/undercover/free-roam.webp) | ![Highway Battle](docs/screenshots/undercover/highway-battle.webp) |
+| ![Pursuit downtown](docs/screenshots/undercover/pursuit-downtown.webp) | ![Police chase](docs/screenshots/undercover/police-chase.webp) |
+| ![Pursuit evaded](docs/screenshots/undercover/pursuit-evaded.webp) | |
+
 ## Install
 
 You need an **Apple Silicon Mac with macOS 15 or newer** and your own disc image (ISO) of the
@@ -62,8 +72,66 @@ The Xbox 360 runs PowerPC code on a custom ATI GPU (Xenos). There is no emulator
 game's executable is translated once, ahead of time, into C++ that compiles to native ARM64. The
 runtime then provides what the console would: its kernel and system calls, memory, threads,
 files, audio, input, and a GPU that accepts the game's Xenos commands and draws them with Vulkan.
-The generated C++ is the game's code, so it is never stored in this repository: each build makes
-it from your own disc. [README-prostreet.md](README-prostreet.md) has diagrams of both stages.
+
+### Build time: from the disc to an app
+
+```mermaid
+flowchart LR
+    iso["Your USA disc image<br/>(ISO)"] -->|extract-xiso| xex["default.xex<br/>(PowerPC code)"]
+    xex --> survey["Survey<br/>function bounds, jump tables,<br/>compiler helpers"]
+    survey --> toml["config/undercover/*.toml<br/>+ hook addresses"]
+    xex --> recomp["XenonRecomp<br/>(+ SpeedBreaker patches)"]
+    toml --> recomp
+    recomp --> ppc["ppc-undercover/<br/>~120,000 functions as C++"]
+    ppc --> clang["clang, Release<br/>(native ARM64)"]
+    runtime["runtime/<br/>kernel, GPU, audio, UI"] --> clang
+    clang --> app["SpeedBreaker Undercover.app"]
+```
+
+The generated C++ is the game's code, so it is never stored in this repository. Each build makes
+it from your own disc, and GitHub can't build releases for the same reason.
+
+### Run time: what happens while you play
+
+```mermaid
+flowchart TB
+    subgraph game["Recompiled game code (native ARM64)"]
+        logic["Game logic, physics, AI"]
+        d3d["The game's own Direct3D<br/>(writes Xenos GPU commands)"]
+    end
+    subgraph rt["SpeedBreaker runtime"]
+        kernel["Kernel and XAM<br/>threads, files, saves, timers"]
+        cp["Command processor<br/>reads the GPU command ring"]
+        sh["Shader translator<br/>Xenos microcode to GLSL to SPIR-V"]
+        r["Vulkan renderer<br/>EDRAM targets, resolves, textures"]
+        apu["Audio<br/>XMA decoding (FFmpeg)"]
+        hooks["Game hooks<br/>frame pacing, Fill Screen,<br/>GPU waits"]
+        ui["Presenter, settings menu,<br/>installer, input (SDL3)"]
+    end
+    logic -->|system calls| kernel
+    logic --> apu
+    d3d -->|command ring in guest memory| cp
+    cp --> sh
+    cp --> r
+    sh --> r
+    hooks -.->|replace or patch a few game functions| game
+    r -->|Vulkan| mvk["MoltenVK"] --> metal["Metal / Apple GPU"]
+    ui --> metal
+```
+
+- **Memory.** The game sees a 4 GB big-endian address space, as on the console. The GPU reads
+  it directly, and writes are tracked page by page so the CPU and GPU see each other's data in
+  the right order.
+- **Threads.** Each guest thread is a host thread, told which of the console's six hardware
+  threads it runs on (the game keeps per-processor data). Like ProStreet, Undercover relies on
+  the console's store ordering between threads, so its build orders memory accesses as x86 does
+  (`SB_GUEST_TSO`).
+- **Graphics.** The Xenos GPU's EDRAM render targets, tiled rendering and resolves are mapped
+  onto Vulkan images, and its shaders are translated when first used and cached.
+- **Hooks.** A handful of the game's functions are replaced or patched by address: whole display
+  refreshes for game time, Hor+/Vert+ for other screen shapes, and backing off instead of spinning
+  while the game waits for the GPU. Undercover's addresses were found by matching ProStreet's
+  code, the same engine one year older.
 
 ## Build from source (macOS, Apple Silicon)
 
@@ -192,6 +260,8 @@ by or sponsored by Electronic Arts Inc., the Need for Speed brand, Microsoft or 
 "Need for Speed" and "Undercover" are trademarks of Electronic Arts Inc. Xbox and Xbox 360 are
 trademarks of Microsoft. All other trademarks, including PlayStation, Apple, Mac, macOS, Vulkan
 and AMD, belong to their respective owners and are used only to describe what this works with.
+The screenshots are from the author's own play on this port and show the game only to document
+that it runs.
 
 **No game files are included or distributed.** This project contains no game data or assets: no
 textures, models, audio, movies or disc files. To play, you need your own legally obtained backup
