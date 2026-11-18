@@ -148,7 +148,9 @@ namespace settings
         // Carbon draws no such map (its car shadows are their own draws), so
         // the row would change nothing there but cost a hitch: not offered,
         // and the renderer keeps 1x (renderer.cpp).
-#if defined(SB_GAME_CARBON) && !defined(SB_GAME_PROSTREET)  // ProStreet has the 1600x1600 shadow map
+// ProStreet has the 1600x1600 shadow map; NFS: Undercover has none (its
+        // depth targets are 1280 and 1040 wide).
+#if defined(SB_GAME_CARBON) && (!defined(SB_GAME_PROSTREET) || defined(SB_GAME_UNDERCOVER))
         constexpr bool kShadowResolutionHidden = true;
 #else
         constexpr bool kShadowResolutionHidden = false;

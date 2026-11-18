@@ -168,6 +168,9 @@ GAMES = {
     'prostreet': {'name': 'SpeedBreaker ProStreet', 'id': 'local.speedbreaker.SpeedBreakerProStreet',
                   'file': 'SpeedBreaker-ProStreet', 'icon': 'AppIcon-prostreet.png',
                   'trademarks': 'Need for Speed and Need for Speed ProStreet are trademarks of Electronic Arts'},
+    'undercover': {'name': 'SpeedBreaker Undercover', 'id': 'local.speedbreaker.SpeedBreakerUndercover',
+                   'file': 'SpeedBreaker-Undercover', 'icon': 'AppIcon-undercover.png',
+                   'trademarks': 'Need for Speed and Need for Speed Undercover are trademarks of Electronic Arts'},
 }
 
 

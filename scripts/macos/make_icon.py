@@ -7,7 +7,8 @@
 # burnt-orange glow, scripts/macos/AppIcon.png; --carbon draws SpeedBreaker
 # Carbon's, teal with a magenta redline and the title screen's purple glow,
 # scripts/macos/AppIcon-carbon.png; --prostreet SpeedBreaker ProStreet's, yellow
-# with a white redline and a red glow, scripts/macos/AppIcon-prostreet.png. Both are kept in the repo so
+# with a white redline and a red glow, scripts/macos/AppIcon-prostreet.png; --undercover SpeedBreaker Undercover's, orange
+# with a police-blue redline and a red glow, scripts/macos/AppIcon-undercover.png. All are kept in the repo so
 # make_app.py needs no Pillow. The flags only try other looks:
 #   --corner=R,G,B,STRENGTH,RADIUS,DARK[,DX,DY]  the glow: its colour, STRENGTH
 #       0-1 at its origin, RADIUS the fraction of the icon it fades over, DARK
@@ -38,11 +39,19 @@ def flag(name, default):
 
 CARBON = '--carbon' in sys.argv
 PROSTREET = '--prostreet' in sys.argv
+UNDERCOVER = '--undercover' in sys.argv
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
-out = args[0] if args else ('AppIcon-carbon.png' if CARBON else 'AppIcon-prostreet.png' if PROSTREET else 'AppIcon.png')
+out = args[0] if args else ('AppIcon-carbon.png' if CARBON else 'AppIcon-prostreet.png' if PROSTREET else
+                            'AppIcon-undercover.png' if UNDERCOVER else 'AppIcon.png')
 # The settings menu's accent (ui/theme.h): Most Wanted's amber, Carbon's teal,
 # ProStreet's HUD yellow (its redline white, its glow the asphalt-at-dusk red).
-if PROSTREET:
+# Undercover's HUD orange, its redline a police light's blue, its glow red.
+if UNDERCOVER:
+    AMBER, NEEDLE = (242, 140, 40), (255, 190, 110)
+    RED = flag('redline', (60, 140, 255))
+    CORNER = flag('corner', (225, 35, 30, 0.6, 0.85, 1.0, -0.22, 0.18))
+    GLOW = flag('glow', None)
+elif PROSTREET:
     AMBER, NEEDLE = (242, 183, 5), (255, 220, 90)
     RED = flag('redline', (245, 245, 245))
     CORNER = flag('corner', (220, 50, 30, 0.55, 0.85, 1.0, -0.22, 0.18))
