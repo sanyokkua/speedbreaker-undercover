@@ -4006,7 +4006,11 @@ layout(push_constant) uniform P
     uint offX, offY, width, height;        // blocks
     uint endian, convert, dstWord, dstRowWords;
     uint z, heightAligned;                 // tiled == 2: 3D slice and aligned height (blocks)
+    uint snap, snapWord, snapGuest;        // snap: read from the ring copy at snapWord of guest snapGuest
 } p;
+// A copy of a dynamic texture's guest memory, made when the load was recorded
+// (Renderer: kDynamicTextureMax), so the CPU may rewrite it meanwhile.
+layout(std430, set = 0, binding = 2) readonly buffer Snapshot { uint s_snap[]; };
 
 uint tiledCombine(uint oi, uint bank, uint pipe, uint yLsb)
 {
@@ -4044,7 +4048,13 @@ uint addr(uint bx, uint by)
     return p.srcBase + (p.tiled != 0u ? tiled2D(x, y, p.pitch, p.bpbLog2) : y * p.pitch + (x << p.bpbLog2));
 }
 
-uint word(uint a) { return swapWord(memLoad((a & 0x1FFFFFFFu) >> 2), p.endian); }
+uint word(uint a)
+{
+    uint pa = a & 0x1FFFFFFFu;
+    if (p.snap != 0u)
+        return swapWord(s_snap[p.snapWord + ((pa - p.snapGuest) >> 2)], p.endian);
+    return swapWord(memLoad(pa >> 2), p.endian);
+}
 
 uint element(uint bx, uint by)
 {
@@ -4146,6 +4156,7 @@ void main()
             uint32_t offX, offY, width, height;
             uint32_t endian, convert, dstWord, dstRowWords;
             uint32_t z, heightAligned;
+            uint32_t snap = 0, snapWord = 0, snapGuest = 0;  // the shader's: a ring copy of guest memory
         };
 
         struct Texture
@@ -4163,6 +4174,7 @@ void main()
             uint32_t levels = 1;
             uint32_t mipStart = 0, mipSize = 0;  // the mip levels' guest memory (size 0: none)
             bool scaled = false;  // host resolution, from the scaled resolve memory
+            uint64_t loadFrame = 0, dynamicUntil = 0;  // the frame of the last load; copied loads until (kDynamicTextureMax)
             bool shadowMap = false;
             uint32_t guestWidth = 0, guestHeight = 0;  // scaled: its guest size (width, height are the host's)
             uint64_t scaledSig = 0;  // scaled: ScaledSignature
@@ -4922,24 +4934,62 @@ void main()
                         rowWords = (bw + perWord - 1) / perWord;
                         rowTexels = rowWords * perWord;
                     }
+                    // A texture the CPU rewrites every frame or two (NFS:
+                    // Undercover's 256 KB one from sub_82A8C710 in a chase):
+                    // guarded until the GPU ran its load, the CPU waited
+                    // ~10 ms a frame for it. Copied into the ring now instead
+                    // and loaded from the copy, it isn't guarded (its pages
+                    // are still watched, so the next write loads it again).
+                    // One 2D image of one level, up to kDynamicTextureMax; a
+                    // reload within kDynamicGapFrames of the last makes it
+                    // dynamic for kDynamicFrames. NFSMW_DYNAMIC_TEXTURES=0: off.
+                    constexpr uint32_t kDynamicTextureMax = 4u << 20;
+                    constexpr uint64_t kDynamicGapFrames = 2, kDynamicFrames = 300;
+                    static const bool dynamicTextures = [] { const char* v = std::getenv("NFSMW_DYNAMIC_TEXTURES"); return !v || v[0] != '0'; }();
+                    if (t.uploaded && s_frame - t.loadFrame <= kDynamicGapFrames)
+                        t.dynamicUntil = s_frame + kDynamicFrames;
+                    t.loadFrame = s_frame;
+                    // A linear volume (Undercover's: 32 slices of 8 KB) copies
+                    // each slice with its own load; a tiled one interleaves
+                    // them, so it stays guarded.
+                    const bool linearVolume = volume && !f.tiled && layers == 1;
+                    const bool snapshot = dynamicTextures && s_frame < t.dynamicUntil && !mipSize &&
+                        (layers * depth == 1 || linearVolume) && size <= kDynamicTextureMax && !s_shadowMode;
+                    if (snapshot && t.dynamicUntil == s_frame + kDynamicFrames && s_frame - t.loadFrame == 0)
+                    {
+                        static uint32_t logged = 0;
+                        if (++logged <= 8)
+                            fprintf(stderr, "[renderer] dynamic texture %08X (%u KB): loaded from a copy, not guarded%s\n", base, size / 1024,
+                                logged == 8 ? " (no more of these lines)" : "");
+                    }
+                    VkDescriptorBufferInfo ringInfo{ s_ring, 0, kRingSize };
                     for (uint32_t slice = 0; slice < layers * depth; slice++)
                     {
                         if (t.storeView)  // stored directly (one 2D slice, or a cube's face: see s_untileStorePipeline)
                         {
+                            const VkDeviceSize snapAt = snapshot ? RingAllocate(size) : ~VkDeviceSize(0);
                             EndPass();
                             Begin();
                             UntileConstants uc{ base + slice * sliceStride, f.tiled ? 1u : 0u, f.tiled ? pitchAligned : rowBytes, fi.bpbLog2,
                                 offX, offY, bw, bh, uint32_t(f.endianness), fi.convert, 0, 0, 0, 0 };
+                            if (snapAt != ~VkDeviceSize(0))
+                            {
+                                memcpy(s_ringHost + snapAt, s_sharedHost + (base & 0x1FFFFFFFu), size);
+                                uc.snap = 1;
+                                uc.snapWord = uint32_t(snapAt / 4);
+                                uc.snapGuest = base & 0x1FFFFFFFu;
+                            }
                             VkDescriptorImageInfo ii{ VK_NULL_HANDLE, t.storeViews[slice], VK_IMAGE_LAYOUT_GENERAL };
-                            VkWriteDescriptorSet w[5] = {
+                            VkWriteDescriptorSet w[6] = {
                                 { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &s_sharedInfo[0], nullptr },
                                 { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr },
+                                { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &ringInfo, nullptr },
                             };
                             if (!t.uploaded && slice == 0)
                                 ToGeneral(t.image.image, VK_IMAGE_ASPECT_COLOR_BIT, layers);
                             s_stateEpoch++;
                             vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileStorePipeline);
-                            s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileStoreLayout, 0, AddSharedParts(w, 2), w);
+                            s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileStoreLayout, 0, AddSharedParts(w, 3), w);
                             vkCmdPushConstants(s_cmd, s_untileStoreLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uc), &uc);
                             if (!(s_exp & 4))
                                 vkCmdDispatch(s_cmd, (bw + 7) / 8, (bh + 7) / 8, 1);
@@ -4947,7 +4997,13 @@ void main()
                             SubmitIfStarving();
                             continue;
                         }
-                        VkDeviceSize staging = RingAllocate(VkDeviceSize(rowWords) * 4 * bh);
+                        // The snapshot shares the staging allocation: a separate
+                        // one could land in an earlier submission's slot.
+                        const VkDeviceSize stagingBytes = (VkDeviceSize(rowWords) * 4 * bh + 255) & ~VkDeviceSize(255);
+                        uint32_t layer = volume ? 0 : slice, zSlice = volume ? slice : 0;
+                        uint32_t sliceBase = base + (volume ? (f.tiled ? 0 : zSlice * sliceStride) : layer * sliceStride);
+                        const uint32_t snapBytes = !snapshot ? 0 : linearVolume ? sliceStride : size;
+                        VkDeviceSize staging = RingAllocate(stagingBytes + snapBytes);
                         if (staging == ~VkDeviceSize(0))
                         {
                             LogOnce(0x2200, "texture %ux%u format %u is too large for a staging slot", width, height, format);
@@ -4955,21 +5011,28 @@ void main()
                         }
                         EndPass();
                         Begin();
-                        uint32_t layer = volume ? 0 : slice, zSlice = volume ? slice : 0;
-                        uint32_t sliceBase = base + (volume ? (f.tiled ? 0 : zSlice * sliceStride) : layer * sliceStride);
                         UntileConstants uc{ sliceBase, f.tiled ? 1u : 0u, f.tiled ? pitchAligned : rowBytes, fi.bpbLog2,
                             offX, offY, bw, bh, uint32_t(f.endianness), fi.convert, uint32_t(staging / 4), rowWords,
                             zSlice, heightAligned3D };
                         if (volume && f.tiled)
                             uc.tiled = 2;
+                        if (snapshot)
+                        {
+                            const uint32_t from = (linearVolume ? sliceBase : base) & 0x1FFFFFFFu;
+                            memcpy(s_ringHost + staging + stagingBytes, s_sharedHost + from, snapBytes);
+                            uc.snap = 1;
+                            uc.snapWord = uint32_t((staging + stagingBytes) / 4);
+                            uc.snapGuest = from;
+                        }
                         VkDescriptorBufferInfo ring{ s_ring, 0, kRingSize };
-                        VkWriteDescriptorSet w[5] = {
+                        VkWriteDescriptorSet w[6] = {
                             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &s_sharedInfo[0], nullptr },
                             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &ring, nullptr },
+                            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &ring, nullptr },
                         };
                         s_stateEpoch++;
                         vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untilePipeline);
-                        s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileLayout, 0, AddSharedParts(w, 2), w);
+                        s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileLayout, 0, AddSharedParts(w, 3), w);
                         vkCmdPushConstants(s_cmd, s_untileLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uc), &uc);
                         uint32_t groupsX = fi.convert != 0 || fi.bpbLog2 >= 2 ? bw : rowWords;
                         if (!(s_exp & 4))
@@ -5021,13 +5084,14 @@ void main()
                                 levelOffX, levelOffY, lbw, lbh, uint32_t(f.endianness), fi.convert, uint32_t(staging / 4), levelRowWords,
                                 0, 0 };
                             VkDescriptorBufferInfo ring{ s_ring, 0, kRingSize };
-                            VkWriteDescriptorSet w[5] = {
+                            VkWriteDescriptorSet w[6] = {
                                 { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &s_sharedInfo[0], nullptr },
                                 { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &ring, nullptr },
+                                { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &ring, nullptr },
                             };
                             s_stateEpoch++;
                             vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untilePipeline);
-                            s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileLayout, 0, AddSharedParts(w, 2), w);
+                            s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_untileLayout, 0, AddSharedParts(w, 3), w);
                             vkCmdPushConstants(s_cmd, s_untileLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uc), &uc);
                             uint32_t groupsX = fi.convert != 0 || fi.bpbLog2 >= 2 ? lbw : levelRowWords;
                             vkCmdDispatch(s_cmd, (groupsX + 7) / 8, (lbh + 7) / 8, 1);
@@ -5044,7 +5108,8 @@ void main()
                     }
                     t.uploaded = true;
                     writewatch::Watch(base, size);
-                    GuardGpu(base, size, false, "texture", true);  // the untile runs later
+                    if (!snapshot)
+                        GuardGpu(base, size, false, "texture", true);  // the untile runs later
                     if (mipSize)
                     {
                         writewatch::Watch(mipBase, mipSize);
@@ -8332,15 +8397,16 @@ void main()
 
         void CreateUntilePipeline()
         {
-            VkDescriptorSetLayoutBinding b[2] = {
+            VkDescriptorSetLayoutBinding b[3] = {
                 { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
                 { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+                { 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // the ring: snapshots
             };
-            auto bindings = WithSharedParts(b, 2);
+            auto bindings = WithSharedParts(b, 3);
             CreateComputePipeline(kUntileGlsl, bindings.data(), uint32_t(bindings.size()), sizeof(UntileConstants), s_untileSetLayout,
                 s_untileLayout, s_untilePipeline);
             b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            bindings = WithSharedParts(b, 2);
+            bindings = WithSharedParts(b, 3);
             CreateComputePipeline(kUntileGlsl, bindings.data(), uint32_t(bindings.size()), sizeof(UntileConstants), s_untileStoreSetLayout,
                 s_untileStoreLayout, s_untileStorePipeline, "#define TO_IMAGE\n");
         }
