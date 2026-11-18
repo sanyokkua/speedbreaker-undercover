@@ -156,12 +156,12 @@ int main(int argc, char** argv)
     {
         const std::string renderer = Read(argv[2]), presenter = Read(argv[3]), info = Read(argv[4]);
         CHECK(!renderer.empty() && !presenter.empty() && !info.empty(), "sources read");
-        const std::string init = Between(renderer, "#if defined(SB_GAME_CARBON) && !defined(SB_GAME_PROSTREET)\n            // Carbon has no 1600x1600 sun shadow map", "#endif");
+        const std::string init = Between(renderer, "#if defined(SB_GAME_CARBON) && (!defined(SB_GAME_PROSTREET) || defined(SB_GAME_UNDERCOVER))\n            // Carbon has no 1600x1600 sun shadow map", "#endif");
         CHECK(Has(init, "s_shadowResolutionSetting = settings::kShadowResolutionDefault;"), "renderer.cpp: Carbon starts at 1x");
-        const std::string apply = Between(renderer, "#if !defined(SB_GAME_CARBON) || defined(SB_GAME_PROSTREET)\n            const int32_t shadowSetting", "#endif");
+        const std::string apply = Between(renderer, "#if !defined(SB_GAME_CARBON) || (defined(SB_GAME_PROSTREET) && !defined(SB_GAME_UNDERCOVER))\n            const int32_t shadowSetting", "#endif");
         CHECK(Has(apply, "ApplyShadowResolution(shadowSetting);"), "renderer.cpp: the live change only outside Carbon");
-        CHECK(Has(renderer, "#if !defined(SB_GAME_CARBON) || defined(SB_GAME_PROSTREET)\n        // Not in Carbon: no pitch-1600 depth target to remake there"),
-            "renderer.cpp: ApplyShadowResolution not built for Carbon (ProStreet, with its 1600x1600 map, has it)");
+        CHECK(Has(renderer, "#if !defined(SB_GAME_CARBON) || (defined(SB_GAME_PROSTREET) && !defined(SB_GAME_UNDERCOVER))\n        // Not in Carbon: no pitch-1600 depth target to remake there"),
+            "renderer.cpp: ApplyShadowResolution not built for Carbon (ProStreet, with its 1600x1600 map, has it; Undercover hasn't)");
         const std::string tone = Between(presenter, "#ifdef SB_GAME_CARBON\n            const bool coolerColors = false;", "#endif");
         CHECK(!tone.empty(), "presenter.cpp: Carbon's tone keeps Cooler Colors off");
         CHECK(Has(info, "if (o.forced)") && Has(info, "not offered in this build"), "system_info.cpp: the dump names forced options");
