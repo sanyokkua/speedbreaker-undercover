@@ -11,6 +11,9 @@ if(SB_GAME STREQUAL "carbon")
 elseif(SB_GAME STREQUAL "prostreet")
     set(PPC_DIR ${ROOT}/ppc-prostreet)
     set(PPC_CONFIG config/prostreet/prostreet.toml)
+elseif(SB_GAME STREQUAL "undercover")
+    set(PPC_DIR ${ROOT}/ppc-undercover)
+    set(PPC_CONFIG config/undercover/undercover.toml)
 else()
     set(PPC_DIR ${ROOT}/ppc)
     set(PPC_CONFIG config/nfsmw.toml)
@@ -33,8 +36,9 @@ target_compile_options(NfsmwRecompLib PRIVATE
 # x86 and the 360 (runtime/cpu/guest_tso.h), first of the force-includes so
 # its macros are the ones ppc_context.h keeps. On by default for ProStreet:
 # without it, busy race scenes (crowds, many cars) showed single wrong
-# frames on ARM64; with it they don't, at the same 60 fps.
-if(SB_GAME STREQUAL "prostreet")
+# frames on ARM64; with it they don't, at the same 60 fps. Undercover, the
+# same engine's successor, starts with it on too.
+if(SB_GAME MATCHES "^(prostreet|undercover)$")
     set(SB_GUEST_TSO_DEFAULT ON)
 else()
     set(SB_GUEST_TSO_DEFAULT OFF)

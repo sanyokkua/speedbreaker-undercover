@@ -250,11 +250,33 @@ uint32_t NtSuspendThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
     return S_OK;
 }
 
+// SpeedBreaker: the thread's processor number (PCR +0x10C) follows its
+// affinity, as on the console (Xenia does the same): NFS: Undercover's job
+// threads (XSetThreadProcessor) index per-processor data by it, and with
+// every thread on processor 0 they shared one slot and crashed. The host
+// schedules the thread as it likes either way. The previous affinity is the
+// processor it had.
 uint32_t KeSetAffinityThread(uint32_t Thread, uint32_t Affinity, be<uint32_t>* lpPreviousAffinity)
 {
+    GuestThreadHandle* thread = nullptr;
+    if (Thread != CURRENT_THREAD_HANDLE && IsKernelObject(Thread))
+        thread = dynamic_cast<GuestThreadHandle*>(GetKernelObject(Thread));
+    if (Thread != CURRENT_THREAD_HANDLE && thread == nullptr)
+        return 0xC0000008;  // STATUS_INVALID_HANDLE
+    uint32_t previous;
+    if (thread == nullptr)
+        previous = GuestThread::CurrentProcessor();
+    else if (const uint32_t pcr = thread->pcr.load(std::memory_order_acquire))
+        previous = ((const uint8_t*)g_memory.Translate(pcr))[0x10C];
+    else
+    {
+        const uint8_t mask = uint8_t(thread->params.flags >> 24);
+        previous = mask == 0 ? 0 : 7 - std::countl_zero(mask);
+    }
     if (lpPreviousAffinity)
-        *lpPreviousAffinity = 2;
-
+        *lpPreviousAffinity = 1u << previous;
+    if (Affinity != 0)
+        GuestThread::SetProcessor(thread, std::countr_zero(Affinity) % 6);
     return 0;
 }
 

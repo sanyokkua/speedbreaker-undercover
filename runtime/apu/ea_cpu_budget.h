@@ -129,6 +129,26 @@ namespace apu::ea_budget
         inline constexpr uint32_t kConfigPercent = 200;
     }
 
+    // NFS: Undercover's EA SND: ProStreet's, moved. The check sub_829A9F28
+    // (ProStreet's sub_827F5658 instruction for instruction, called from
+    // sub_8298F8E8 and sub_8298F758) reads the budget percent at config +204
+    // (ProStreet +200); the scale (64.0) and per-percent float (170666.67)
+    // are ProStreet's values.
+    namespace undercover
+    {
+        inline constexpr uint32_t kMixerUpdate = 0x8298F8E8;
+        inline constexpr uint32_t kBudgetCheck = 0x829A9F28;
+        inline constexpr uint32_t kVoiceCosts = 0x829AA048;
+        inline constexpr uint32_t kExpelOverBudget = 0x829AA130;
+        inline constexpr uint32_t kPickVoice = 0x829AA090;
+        inline constexpr uint32_t kExpelVoice = 0x829B8748;
+        inline constexpr uint32_t kTimebase = 0x8298CD80;
+        inline constexpr uint32_t kMixer = 0x836FC9D4;
+        inline constexpr uint32_t kScale = 0x820951D8;            // float: EA's units per tick (64)
+        inline constexpr uint32_t kBudgetPerPercent = 0x82167D84;  // float: 170666.67
+        inline constexpr uint32_t kConfigPercent = 204;
+    }
+
     // EA's three-block average of the mixer's own busy time, as sub_82601528
     // keeps it (mixer + 80: the average, +84/+88 the last two blocks, +92
     // which one the next block replaces).

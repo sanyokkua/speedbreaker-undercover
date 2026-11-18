@@ -74,13 +74,18 @@ endif()
 #           runtime/game/prostreet/. It takes Carbon's engine paths
 #           (SB_GAME_CARBON is defined too: the same EA engine generation),
 #           and SB_GAME_PROSTREET for what is its own.
+#   undercover  NFS: Undercover (USA, En/Fr/Es), work in progress:
+#           ppc-undercover/ from config/undercover/undercover.toml, the hooks
+#           in runtime/game/undercover/. ProStreet's engine successor: it
+#           takes ProStreet's paths (SB_GAME_CARBON and SB_GAME_PROSTREET are
+#           defined too) and SB_GAME_UNDERCOVER for what is its own.
 # The engine (runtime/ but its game hooks) is the same for both. A game's
 # hooks replace recompiled functions by guest address, so a build compiles
 # only its own game's: another game's would hook whatever is at the address.
-set(SB_GAME "mw" CACHE STRING "The game: mw (NFS: Most Wanted), carbon (NFS: Carbon) or prostreet (NFS: ProStreet)")
-set_property(CACHE SB_GAME PROPERTY STRINGS mw carbon prostreet)
-if(NOT SB_GAME MATCHES "^(mw|carbon|prostreet)$")
-    message(FATAL_ERROR "SB_GAME=${SB_GAME}: mw, carbon or prostreet")
+set(SB_GAME "mw" CACHE STRING "The game: mw (NFS: Most Wanted), carbon (NFS: Carbon), prostreet (NFS: ProStreet) or undercover (NFS: Undercover)")
+set_property(CACHE SB_GAME PROPERTY STRINGS mw carbon prostreet undercover)
+if(NOT SB_GAME MATCHES "^(mw|carbon|prostreet|undercover)$")
+    message(FATAL_ERROR "SB_GAME=${SB_GAME}: mw, carbon, prostreet or undercover")
 endif()
 message(STATUS "SpeedBreaker game: ${SB_GAME}")
 
@@ -95,10 +100,13 @@ message(STATUS "SpeedBreaker game: ${SB_GAME}")
 set(SB_VERSION_MW 0.2.1)
 set(SB_VERSION_CARBON 0.1.3)
 set(SB_VERSION_PROSTREET 0.1.0)
+set(SB_VERSION_UNDERCOVER 0.0.1)
 if(SB_GAME STREQUAL "carbon")
     set(SB_VERSION ${SB_VERSION_CARBON})
 elseif(SB_GAME STREQUAL "prostreet")
     set(SB_VERSION ${SB_VERSION_PROSTREET})
+elseif(SB_GAME STREQUAL "undercover")
+    set(SB_VERSION ${SB_VERSION_UNDERCOVER})
 else()
     set(SB_VERSION ${SB_VERSION_MW})
 endif()

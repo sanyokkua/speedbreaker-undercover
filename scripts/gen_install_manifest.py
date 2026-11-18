@@ -4,6 +4,7 @@ user's disc against (relative path, size, SHA-256 of every file).
     python3 scripts/gen_install_manifest.py game/files
     SB_GAME=carbon python3 scripts/gen_install_manifest.py game-carbon/files
     SB_GAME=prostreet python3 scripts/gen_install_manifest.py game-prostreet/files
+    SB_GAME=undercover python3 scripts/gen_install_manifest.py game-undercover/files
     python3 scripts/gen_install_manifest.py --tsv files.tsv --xex default.xex \
         --config config/nfsmw-pal-es.toml -o runtime/install/manifest_pal_es.inc
 
@@ -38,6 +39,7 @@ GAMES = {
     'mw': ('config/nfsmw.toml', 'runtime/install/manifest.inc'),
     'carbon': ('config/carbon/carbon.toml', 'runtime/install/manifest_carbon.inc'),
     'prostreet': ('config/prostreet/prostreet.toml', 'runtime/install/manifest_prostreet.inc'),
+    'undercover': ('config/undercover/undercover.toml', 'runtime/install/manifest_undercover.inc'),
 }
 FORMAT = 1                        # bump if the meaning of the entries changes
 MARKER = '.nfsmw-install'         # written by the installer; not a disc file

@@ -6,7 +6,9 @@
 #include <iterator>
 
 // Each game's disc (scripts/gen_install_manifest.py writes both).
-#if defined(SB_GAME_PROSTREET)
+#if defined(SB_GAME_UNDERCOVER)
+#define SB_MANIFEST_INC "manifest_undercover.inc"
+#elif defined(SB_GAME_PROSTREET)
 #define SB_MANIFEST_INC "manifest_prostreet.inc"
 #elif defined(SB_GAME_CARBON)
 #define SB_MANIFEST_INC "manifest_carbon.inc"

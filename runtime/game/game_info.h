@@ -32,7 +32,24 @@
 // never both hold a SpeedBreaker.exe: Most Wanted's stays SpeedBreaker.exe.
 // SB_WINDOWS_LOGS is where Windows' message boxes say the log is (the data
 // folder of user/paths.h kUserFolderName, as %LOCALAPPDATA% shows it).
-#if defined(SB_GAME_PROSTREET)
+#if defined(SB_GAME_UNDERCOVER)
+// SB_GAME=undercover: no published releases yet, so no Check for Updates
+// (SB_HAS_RELEASES 0 hides the row) and no repository to link to.
+#define SB_HAS_RELEASES 0
+#define SB_GAME_TITLE "NFS: Undercover"
+#define SB_GAME_NAME "Need for Speed: Undercover"
+#define SB_GAME_RELEASE "the USA Xbox 360 release (English, French and Spanish)"
+#define SB_GAME_AUTO_RESOLUTION "Auto: from the screen and the GPU (1440p: 1.5x on an integrated GPU such as a Mac's, 2x on a dedicated one)."
+#define SB_GAME_GAMMA_OFF "Off: the flatter picture, without the ramp."
+#define SB_GAME_UNSUPPORTED " Other editions of the game (other regions) aren't supported yet."
+#define SB_GAME_SUPPORTED_DISC "SpeedBreaker: Undercover supports the USA release of Need for Speed: Undercover. Other editions aren't supported yet."
+#define SB_APP_NAME "SpeedBreaker: Undercover"
+#define SB_GITHUB_REPO "SpeedBreakerProject/speedbreaker-carbon"
+#define SB_FILE_PREFIX "speedbreaker-undercover"
+#define SB_WINDOWS_EXE "SpeedBreaker-Undercover.exe"
+#define SB_WINDOWS_LOGS "%LOCALAPPDATA%\\SpeedBreaker Undercover\\logs"
+#define SB_IOS_APP_NAME "SpeedBreaker Undercover"
+#elif defined(SB_GAME_PROSTREET)
 // SB_GAME=prostreet: no published releases, so no Check for Updates
 // (SB_HAS_RELEASES 0 hides the row) and no repository to link to.
 #define SB_HAS_RELEASES 0

@@ -45,7 +45,13 @@ inline std::filesystem::path GetGamePath()
 // settings, saves or installed game.
 // A ProStreet build (SB_GAME=prostreet) likewise: SpeedBreaker ProStreet or
 // speedbreaker-prostreet.
-#if defined(SB_GAME_PROSTREET) && (defined(__APPLE__) || defined(_WIN32))
+// An Undercover build (SB_GAME=undercover): SpeedBreaker Undercover or
+// speedbreaker-undercover.
+#if defined(SB_GAME_UNDERCOVER) && (defined(__APPLE__) || defined(_WIN32))
+inline constexpr const char* kUserFolderName = "SpeedBreaker Undercover";
+#elif defined(SB_GAME_UNDERCOVER)
+inline constexpr const char* kUserFolderName = "speedbreaker-undercover";
+#elif defined(SB_GAME_PROSTREET) && (defined(__APPLE__) || defined(_WIN32))
 inline constexpr const char* kUserFolderName = "SpeedBreaker ProStreet";
 #elif defined(SB_GAME_PROSTREET)
 inline constexpr const char* kUserFolderName = "speedbreaker-prostreet";

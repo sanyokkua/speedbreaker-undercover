@@ -34,7 +34,10 @@ namespace ui::theme
         return { float((rgb >> 16) & 0xFF) / 255.0f, float((rgb >> 8) & 0xFF) / 255.0f, float(rgb & 0xFF) / 255.0f };
     }
 
-#if defined(SB_GAME_PROSTREET)
+#if defined(SB_GAME_UNDERCOVER)
+    constexpr Rgb kAccent = FromHex(0xF28C28);      // Undercover's HUD orange
+    constexpr Rgb kAccentFill = kAccent;
+#elif defined(SB_GAME_PROSTREET)
     constexpr Rgb kAccent = FromHex(0xF2B705);      // ProStreet's HUD yellow
     constexpr Rgb kAccentFill = kAccent;
 #elif defined(SB_GAME_CARBON)

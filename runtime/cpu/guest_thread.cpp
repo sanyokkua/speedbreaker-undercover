@@ -135,7 +135,7 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
         SetHostThreadName(name);
     }
     hThread->suspended.wait(true);
-    const uint32_t exitCode = GuestThread::Start(hThread->params);
+    const uint32_t exitCode = GuestThread::Start(hThread->params, hThread);
     // SpeedBreaker: record the exit code (GetExitCodeThread, as the game's
     // own XAPI asks: game/prostreet/xapi_threads.cpp), signal waiters, then
     // drop the thread's own reference.
@@ -186,12 +186,14 @@ uint32_t GuestThreadHandle::GetThreadId() const
 }
 
 
-uint32_t GuestThread::Start(const GuestThreadParams& params)
+uint32_t GuestThread::Start(const GuestThreadParams& params, GuestThreadHandle* self)
 {
     const auto procMask = (uint8_t)(params.flags >> 24);
     const auto cpuNumber = procMask == 0 ? 0 : 7 - std::countl_zero(procMask);
 
     GuestThreadContext ctx(cpuNumber);
+    if (self)
+        self->pcr.store(g_memory.MapVirtual(ctx.thread), std::memory_order_release);
     ctx.ppcContext.r3.u64 = params.value;
     ctx.ppcContext.r4.u64 = params.value2;
 
@@ -217,6 +219,28 @@ GuestThreadHandle* GuestThread::Start(const GuestThreadParams& params, uint32_t*
     }
 
     return hThread;
+}
+
+// A thread created suspended (the usual way: create, set the processor,
+// resume) has no PCR yet: its creation flags carry the processor instead
+// (bits 24-31 a mask, as ExCreateThread's), read when it starts.
+void GuestThread::SetProcessor(GuestThreadHandle* thread, uint32_t processor)
+{
+    if (thread == nullptr)
+    {
+        auto* pcr = (uint8_t*)g_memory.Translate(GetPPCContext()->r13.u32);
+        pcr[0x10C] = uint8_t(processor);
+        return;
+    }
+    if (const uint32_t pcr = thread->pcr.load(std::memory_order_acquire))
+        ((uint8_t*)g_memory.Translate(pcr))[0x10C] = uint8_t(processor);
+    else
+        thread->params.flags = (thread->params.flags & 0x00FFFFFF) | ((1u << processor) << 24);
+}
+
+uint32_t GuestThread::CurrentProcessor()
+{
+    return ((const uint8_t*)g_memory.Translate(GetPPCContext()->r13.u32))[0x10C];
 }
 
 uint32_t GuestThread::GetCurrentThreadId()

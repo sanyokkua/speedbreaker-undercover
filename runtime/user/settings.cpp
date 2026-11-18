@@ -124,7 +124,8 @@ namespace settings
 // (its language table and boot call); Carbon's own languages aren't
 // offered yet, so it isn't shown there either.
 // NFS: ProStreet offers its own table (game/prostreet/language.cpp).
-#if (defined(__APPLE__) && TARGET_OS_IOS) || (defined(SB_GAME_CARBON) && !defined(SB_GAME_PROSTREET))
+// NFS: Undercover: its language table and boot call aren't found yet.
+#if (defined(__APPLE__) && TARGET_OS_IOS) || (defined(SB_GAME_CARBON) && !defined(SB_GAME_PROSTREET)) || defined(SB_GAME_UNDERCOVER)
         constexpr bool kLanguageHidden = true;
 #else
         constexpr bool kLanguageHidden = false;

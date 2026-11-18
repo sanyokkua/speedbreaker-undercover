@@ -24,17 +24,19 @@ if GAME == 'carbon':
     PPC, OUT = ROOT / 'ppc-carbon', ROOT / 'runtime/kernel/import_stubs_carbon.cpp'
 elif GAME == 'prostreet':
     PPC, OUT = ROOT / 'ppc-prostreet', ROOT / 'runtime/kernel/import_stubs_prostreet.cpp'
+elif GAME == 'undercover':
+    PPC, OUT = ROOT / 'ppc-undercover', ROOT / 'runtime/kernel/import_stubs_undercover.cpp'
 elif GAME == 'mw':
     PPC, OUT = ROOT / 'ppc', BASE_OUT
 else:
-    raise SystemExit(f'SB_GAME={GAME}: mw, carbon or prostreet')
+    raise SystemExit(f'SB_GAME={GAME}: mw, carbon, prostreet or undercover')
 
 imports = sorted(set(re.findall(r'PPC_EXTERN_FUNC\(__imp__(\w+)\)', (PPC / 'ppc_recomp_shared.h').read_text())))
 implemented = set()
 for src in (ROOT / 'runtime').rglob('*.cpp'):
     if src in (BASE_OUT, OUT):
         continue
-    if src.name in ('import_stubs_carbon.cpp', 'import_stubs_prostreet.cpp'):
+    if src.name in ('import_stubs_carbon.cpp', 'import_stubs_prostreet.cpp', 'import_stubs_undercover.cpp'):
         continue
     implemented |= set(re.findall(r'(?:PPC_FUNC|GUEST_FUNCTION_HOOK|GUEST_FUNCTION_STUB)\(\s*__imp__(\w+)', src.read_text()))
 # Carbon's and ProStreet's builds also have Most Wanted's stub file: only what it lacks goes here.
@@ -46,7 +48,7 @@ lines = [
     '// elsewhere in runtime/ and rerun the script.',
     '// SpeedBreaker runtime. GPL-3.0-or-later (see COPYING).',
     (f'// {len(imports)} imports: {len(implemented & set(imports))} implemented, {len(missing)} stubbed.' if OUT == BASE_OUT else
-     f'// {"NFS: ProStreet" if GAME == "prostreet" else "NFS: Carbon"} (SB_GAME={GAME}, built only for it): {len(imports)} imports, {len(implemented & set(imports))} implemented, '
+     f'// { {"prostreet": "NFS: ProStreet", "undercover": "NFS: Undercover"}.get(GAME, "NFS: Carbon") } (SB_GAME={GAME}, built only for it): {len(imports)} imports, {len(implemented & set(imports))} implemented, '
      f'{len(already & set(imports))} stubbed in import_stubs.cpp, these {len(missing)} here.'),
     '#include "../stdafx.h"',
     '#include "unimplemented.h"',

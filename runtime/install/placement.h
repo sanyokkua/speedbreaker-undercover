@@ -82,7 +82,9 @@ namespace install
     // "SpeedBreaker": on SteamOS that's the bundle's own folder in ~/Games,
     // the folder players are most likely to pick. NFS: Carbon's has its own
     // name, so both games can be installed into the same picked folder.
-#if defined(SB_GAME_PROSTREET)
+#if defined(SB_GAME_UNDERCOVER)
+    inline constexpr const char* kPickedSubfolder = "SpeedBreaker Undercover Game";
+#elif defined(SB_GAME_PROSTREET)
     inline constexpr const char* kPickedSubfolder = "SpeedBreaker ProStreet Game";
 #elif defined(SB_GAME_CARBON)
     inline constexpr const char* kPickedSubfolder = "SpeedBreaker Carbon Game";

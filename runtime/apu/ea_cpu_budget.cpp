@@ -8,7 +8,9 @@
 #include <kernel/function.h>
 #include <report/report.h>
 
-#if defined(SB_GAME_PROSTREET)
+#if defined(SB_GAME_UNDERCOVER)
+extern "C" PPC_FUNC(__imp__sub_829AA130);
+#elif defined(SB_GAME_PROSTREET)
 extern "C" PPC_FUNC(__imp__sub_827F5860);
 #elif defined(SB_GAME_CARBON)
 extern "C" PPC_FUNC(__imp__sub_826CDBD0);
@@ -66,7 +68,25 @@ namespace
     }
 }
 
-#ifdef SB_GAME_PROSTREET
+#if defined(SB_GAME_UNDERCOVER)
+// NFS: Undercover's over-budget step (ea_cpu_budget.h, undercover):
+// sub_829A9F28's, f1 = how far over in EA's units. Its budget is Carbon's
+// with the divisor baked into one float: share % x 170666.67.
+PPC_FUNC(sub_829AA130)
+{
+    if (s_eaExpels)
+    {
+        __imp__sub_829AA130(ctx, base);
+        return;
+    }
+    namespace p = apu::ea_budget::undercover;
+    const double scale = GuestFloat(base, p::kScale);
+    const uint32_t config = PPC_LOAD_U32(p::kMixer);
+    const double budget = config ? GuestFloat(base, p::kBudgetPerPercent) * GuestFloat(base, config + p::kConfigPercent) : 0;
+    const auto ms = [&](double units) { return scale > 0 ? units / scale / apu::ea_budget::kTicksPerMs : 0.0; };
+    NoteSkipped(ms(ctx.f1.f64), ms(budget));
+}
+#elif defined(SB_GAME_PROSTREET)
 // NFS: ProStreet's over-budget step (ea_cpu_budget.h, prostreet):
 // sub_827F5658's, f1 = how far over in EA's units. Its budget is Carbon's
 // with the divisor baked into one float: share % x 170666.67.

@@ -16,7 +16,7 @@ import re
 USA_XEX_SHA256 = 'aebdf3c14d1e4e4ed2c130d94bc1a0e97bd6d5bf39bdfdef33c3909c9cc4ba4c'
 PAL_ES_XEX_SHA256 = 'aad15fc218d034de3131f746e0b763dd8049a40dd676efc87667fcaf4fc72694'
 
-SKIP_DIRS = {'thirdparty', 'carbon', 'prostreet'}  # other games' hooks: their own addresses
+SKIP_DIRS = {'thirdparty', 'carbon', 'prostreet', 'undercover'}  # other games' hooks: their own addresses
 SKIP_FILES = {'pal_es_addresses.inc', 'pal_es_names.h'}
 EXTENSIONS = {'.cpp', '.h', '.inc', '.mm'}
 SUB = re.compile(r'\bsub_(82[0-9A-F]{6})\b')
@@ -62,14 +62,14 @@ def strip_carbon(text):
             continue
         out.append('')
     text = '\n'.join(out)
-    m = re.search(r'\bnamespace\s+(carbon|prostreet)\s*\{', text)
+    m = re.search(r'\bnamespace\s+(carbon|prostreet|undercover)\s*\{', text)
     while m:
         i, level = m.end(), 1
         while i < len(text) and level:
             level += {'{': 1, '}': -1}.get(text[i], 0)
             i += 1
         text = text[:m.start()] + '\n' * text.count('\n', m.start(), i) + text[i:]
-        m = re.search(r'\bnamespace\s+(carbon|prostreet)\s*\{', text)
+        m = re.search(r'\bnamespace\s+(carbon|prostreet|undercover)\s*\{', text)
     return text
 
 

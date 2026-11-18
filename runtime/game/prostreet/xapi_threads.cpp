@@ -18,7 +18,11 @@
 #include <kernel/dispatcher.h>
 #include <kernel/xdm.h>
 
-PPC_FUNC(sub_82A6C9B8)
+#ifndef SB_XAPI_GET_EXIT_CODE_THREAD
+#define SB_XAPI_GET_EXIT_CODE_THREAD sub_82A6C9B8
+#endif
+
+PPC_FUNC(SB_XAPI_GET_EXIT_CODE_THREAD)
 {
     constexpr uint32_t kStillActive = 259;
     constexpr uint32_t kErrorInvalidHandle = 6;

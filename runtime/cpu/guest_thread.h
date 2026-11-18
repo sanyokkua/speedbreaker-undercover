@@ -47,6 +47,9 @@ struct GuestThreadHandle : Waitable
     std::atomic<bool> suspended;
     bool finished = false;  // SpeedBreaker: guarded by dispatcher::Lock()
     uint32_t exitCode = 0;  // SpeedBreaker: its return value once finished (same lock)
+    // SpeedBreaker: the guest address of the thread's PCR once it runs (0
+    // before), so KeSetAffinityThread can set its processor number (+0x10C).
+    std::atomic<uint32_t> pcr{ 0 };
 #ifdef USE_PTHREAD
     platform::Thread thread{};
 #else
@@ -64,7 +67,11 @@ struct GuestThreadHandle : Waitable
 
 struct GuestThread
 {
-    static uint32_t Start(const GuestThreadParams& params);
+    static uint32_t Start(const GuestThreadParams& params, GuestThreadHandle* self = nullptr);
+    // SpeedBreaker: the processor (0-5) a thread runs on as the guest sees it,
+    // PCR +0x10C (KeSetAffinityThread). Games index per-processor data by it.
+    static void SetProcessor(GuestThreadHandle* thread, uint32_t processor);
+    static uint32_t CurrentProcessor();
     static GuestThreadHandle* Start(const GuestThreadParams& params, uint32_t* threadId);
 
     static uint32_t GetCurrentThreadId();
