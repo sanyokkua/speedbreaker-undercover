@@ -4267,7 +4267,16 @@ void main()
         const bool s_resolveToTexture = [] { const char* v = std::getenv("NFSMW_RESOLVE_TO_TEXTURE"); return !v || v[0] != '0'; }();
         // ... also from a scaled resolve (its 1x words); NFSMW_SCALED_FUSE=0
         // turns that off (and the scaled textures' own, see Resolve).
-        const bool s_scaledFuse = [] { const char* v = std::getenv("NFSMW_SCALED_FUSE"); return !v || v[0] != '0'; }();
+        // NFS: Undercover: off by default. With it, single frames came out
+        // overexposed or dark in a chase (5-8% of frames; 0-0.4% without, at
+        // ~0.5 ms more GPU time): a scaled texture the resolve stored into
+        // is sometimes stale for one frame. Root cause still open.
+#if defined(SB_GAME_UNDERCOVER)
+        constexpr bool kScaledFuseDefault = false;
+#else
+        constexpr bool kScaledFuseDefault = true;
+#endif
+        const bool s_scaledFuse = [] { const char* v = std::getenv("NFSMW_SCALED_FUSE"); return v ? v[0] != '0' : kScaledFuseDefault; }();
         // ... and then only there, where no other reader asks (see Resolve);
         // NFSMW_SCALED_HOLD=0: into the pool as well, always.
         const bool s_scaledHold = [] { const char* v = std::getenv("NFSMW_SCALED_HOLD"); return !v || v[0] != '0'; }();
