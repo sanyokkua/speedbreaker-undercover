@@ -42,8 +42,9 @@ You need an **Apple Silicon Mac with macOS 15 or newer** and your own disc image
 **USA Xbox 360 release** of *Need for Speed: Undercover* (English, French and Spanish). Other
 regions and the PC, PS3, PS2 and Wii versions don't work. No game files are included.
 
-1. Get `SpeedBreaker-Undercover-macos.dmg` (no public release yet: build it as below), open it
-   and drag **SpeedBreaker Undercover** to Applications.
+1. Download `SpeedBreaker-Undercover-macos.dmg` from
+   [Releases](https://github.com/sanyokkua/speedbreaker-undercover/releases/latest), open it and
+   drag **SpeedBreaker Undercover** to Applications.
 2. **Open it.** The app isn't notarized by Apple, so the first time macOS refuses. Close that
    message (don't move the app to the Trash), go to **System Settings > Privacy & Security**,
    scroll to the message about SpeedBreaker Undercover, click **Open Anyway** and confirm.

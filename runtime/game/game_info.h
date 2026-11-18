@@ -33,8 +33,9 @@
 // SB_WINDOWS_LOGS is where Windows' message boxes say the log is (the data
 // folder of user/paths.h kUserFolderName, as %LOCALAPPDATA% shows it).
 #if defined(SB_GAME_UNDERCOVER)
-// SB_GAME=undercover: no published releases yet, so no Check for Updates
-// (SB_HAS_RELEASES 0 hides the row) and no repository to link to.
+// SB_GAME=undercover: its own repository (sanyokkua/speedbreaker-undercover);
+// Check for Updates stays hidden (SB_HAS_RELEASES 0), as in ProStreet: its
+// release tags (undercover-v<version>) aren't the ones the check reads.
 #define SB_HAS_RELEASES 0
 #define SB_GAME_TITLE "NFS: Undercover"
 #define SB_GAME_NAME "Need for Speed: Undercover"
@@ -44,7 +45,7 @@
 #define SB_GAME_UNSUPPORTED " Other editions of the game (other regions) aren't supported yet."
 #define SB_GAME_SUPPORTED_DISC "SpeedBreaker: Undercover supports the USA release of Need for Speed: Undercover. Other editions aren't supported yet."
 #define SB_APP_NAME "SpeedBreaker: Undercover"
-#define SB_GITHUB_REPO "SpeedBreakerProject/speedbreaker-carbon"
+#define SB_GITHUB_REPO "sanyokkua/speedbreaker-undercover"
 #define SB_FILE_PREFIX "speedbreaker-undercover"
 #define SB_WINDOWS_EXE "SpeedBreaker-Undercover.exe"
 #define SB_WINDOWS_LOGS "%LOCALAPPDATA%\\SpeedBreaker Undercover\\logs"
