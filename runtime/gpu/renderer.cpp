@@ -4948,11 +4948,17 @@ void main()
                     // slots every 2-6 s in free roam (sub_8291CD20,
                     // sub_82912CC8): guarded, each new one waited ~10-20 ms
                     // for the GPU, so there a reload within 600 frames counts.
+                    // NFSMW_DYNAMIC_TEXTURE_GAP=<frames> overrides it.
 #if defined(SB_GAME_UNDERCOVER)
-                    constexpr uint64_t kDynamicGapFrames = 600, kDynamicFrames = 300;
+                    constexpr uint64_t kDynamicGapDefault = 600;
 #else
-                    constexpr uint64_t kDynamicGapFrames = 2, kDynamicFrames = 300;
+                    constexpr uint64_t kDynamicGapDefault = 2;
 #endif
+                    static const uint64_t kDynamicGapFrames = [] {
+                        const char* v = std::getenv("NFSMW_DYNAMIC_TEXTURE_GAP");
+                        return v && std::atoi(v) > 0 ? uint64_t(std::atoi(v)) : kDynamicGapDefault;
+                    }();
+                    constexpr uint64_t kDynamicFrames = 300;
                     static const bool dynamicTextures = [] { const char* v = std::getenv("NFSMW_DYNAMIC_TEXTURES"); return !v || v[0] != '0'; }();
                     if (t.uploaded && s_frame - t.loadFrame <= kDynamicGapFrames)
                         t.dynamicUntil = s_frame + kDynamicFrames;
