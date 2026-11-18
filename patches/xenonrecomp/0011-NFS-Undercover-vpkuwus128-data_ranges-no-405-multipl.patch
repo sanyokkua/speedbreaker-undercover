@@ -1,0 +1,132 @@
+From e718945fa1177502263a45c31825a11ca3205c71 Mon Sep 17 00:00:00 2001
+From: Oleksandr Kostenko <sanyokkua@gmail.com>
+Date: Wed, 18 Nov 2026 09:01:45 +0100
+Subject: [PATCH] NFS: Undercover: vpkuwus128, data_ranges, no 405
+ multiply-accumulate on Xenon
+
+- vpkuwus128 shares vpkuwus's code (same operand order as the other
+  128-bit packs).
+- [main] data_ranges = [{ address, size }]: data inside a code section,
+  skipped by the leftover scan so no function is made of it (Undercover
+  has an unreferenced offset table after its import thunks).
+- The disassembler matched PowerPC 405/440 multiply-accumulate entries
+  (major opcode 4, e.g. mullhwu.) before VMX128 ones: on Xenon those
+  words are VMX128 (vsldoi128). With VMX128 on, opcode-4 entries that
+  are neither AltiVec nor VMX128 are skipped. Recompiling ProStreet gives
+  byte-identical output.
+---
+ XenonRecomp/pch.h                 |  1 +
+ XenonRecomp/recompiler.cpp        |  9 +++++++++
+ XenonRecomp/recompiler_config.cpp |  9 +++++++++
+ XenonRecomp/recompiler_config.h   |  3 +++
+ thirdparty/disasm/ppc-dis.c       | 14 ++++++++++++++
+ 5 files changed, 36 insertions(+)
+
+diff --git a/XenonRecomp/pch.h b/XenonRecomp/pch.h
+index c9f9a85..fc4af47 100644
+--- a/XenonRecomp/pch.h
++++ b/XenonRecomp/pch.h
+@@ -8,6 +8,7 @@
+ #include <file.h>
+ #include <filesystem>
+ #include <fstream>
++#include <map>
+ #include <function.h>
+ #include <image.h>
+ #include <toml++/toml.hpp>
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index 5fc0ffa..ce9e220 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -237,6 +237,14 @@ void Recompiler::Analyse()
+                 continue;
+             }
+ 
++            auto dataRange = config.dataRanges.find(uint32_t(base));
++            if (dataRange != config.dataRanges.end())
++            {
++                base += dataRange->second;
++                data += dataRange->second;
++                continue;
++            }
++
+             auto fnSymbol = image.symbols.find(base);
+             if (fnSymbol != image.symbols.end() && fnSymbol->address == base && fnSymbol->type == Symbol_Function)
+             {
+@@ -2191,6 +2199,7 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_VPKUWUS:
++    case PPC_INST_VPKUWUS128:
+         // Unsigned in, unsigned out: clamp to 0xFFFF first, since packus treats input as signed.
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_packus_epi32(simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF)), simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF))));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
+         break;
+diff --git a/XenonRecomp/recompiler_config.cpp b/XenonRecomp/recompiler_config.cpp
+index 1623367..dba4019 100644
+--- a/XenonRecomp/recompiler_config.cpp
++++ b/XenonRecomp/recompiler_config.cpp
+@@ -75,6 +75,15 @@ void RecompilerConfig::Load(const std::string_view& configFilePath)
+             }
+         }
+ 
++        if (auto dataArray = main["data_ranges"].as_array())
++        {
++            for (auto& range : *dataArray)
++            {
++                auto& rangeTable = *range.as_table();
++                dataRanges.emplace(*rangeTable["address"].value<uint32_t>(), *rangeTable["size"].value<uint32_t>());
++            }
++        }
++
+         if (!switchTableFilePath.empty())
+         {
+             toml::table switchToml = toml::parse_file(directoryPath + switchTableFilePath)
+diff --git a/XenonRecomp/recompiler_config.h b/XenonRecomp/recompiler_config.h
+index 581e796..d35f70a 100644
+--- a/XenonRecomp/recompiler_config.h
++++ b/XenonRecomp/recompiler_config.h
+@@ -55,6 +55,9 @@ struct RecompilerConfig
+     // function: the enclosing function's body, entered with a goto.
+     std::vector<uint32_t> secondaryEntries;
+     std::unordered_map<uint32_t, uint32_t> invalidInstructions;
++    // Data inside a code section (address -> size): skipped by the leftover
++    // scan, so no function is made of it.
++    std::map<uint32_t, uint32_t> dataRanges;
+     std::unordered_map<uint32_t, RecompilerMidAsmHook> midAsmHooks;
+ 
+     void Load(const std::string_view& configFilePath);
+diff --git a/thirdparty/disasm/ppc-dis.c b/thirdparty/disasm/ppc-dis.c
+index 3e224b4..188d7dc 100644
+--- a/thirdparty/disasm/ppc-dis.c
++++ b/thirdparty/disasm/ppc-dis.c
+@@ -5519,6 +5519,13 @@ again:
+             || (opcode->flags & dialect) == 0)
+             continue;
+ 
++        /* Xenon has no 405/440 multiply-accumulate (major opcode 4):
++           there those words are VMX128 (vsldoi128, ...), later in the
++           table. */
++        if (op == 4 && (dialect & PPC_OPCODE_VMX_128) != 0
++            && (opcode->flags & (PPC_OPCODE_ALTIVEC | PPC_OPCODE_VMX_128)) == 0)
++            continue;
++
+         /* Make two passes over the operands.  First see if any of them
+        have extraction functions, and, if they do, make sure the
+        instruction is valid.  */
+@@ -5694,6 +5701,13 @@ again:
+             || (opcode->flags & dialect) == 0)
+             continue;
+ 
++        /* Xenon has no 405/440 multiply-accumulate (major opcode 4):
++           there those words are VMX128 (vsldoi128, ...), later in the
++           table. */
++        if (op == 4 && (dialect & PPC_OPCODE_VMX_128) != 0
++            && (opcode->flags & (PPC_OPCODE_ALTIVEC | PPC_OPCODE_VMX_128)) == 0)
++            continue;
++
+         /* Make two passes over the operands.  First see if any of them
+        have extraction functions, and, if they do, make sure the
+        instruction is valid.  */
+-- 
+2.56.1
+

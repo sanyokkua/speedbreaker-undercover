@@ -120,6 +120,48 @@ GAMES = {
             0x824BBC90: 0x28,
         },
     ),
+    # NFS: Undercover (Xbox 360, USA, En/Fr/Es), default.xex SHA-256 97ac0c07...
+    # Sections from game-undercover/survey/xexsurvey.txt.
+    'undercover': dict(
+        config='config/undercover/undercover.toml',
+        switch_tables='config/undercover/switch_tables.toml',
+        switch_tables_inline='config/undercover/switch_tables_inline.toml',
+        survey='game-undercover/survey',
+        ppc='ppc-undercover',
+        text=(0x821E0000, 0x83085E2C),
+        pdata=(0x82172800, 0x821D21C8),
+        data=[(0x82000400, 0x82172680), (0x83090000, 0x83760538)],
+        drop=set(),
+        add=[
+            # Offset tables, as Carbon's and ProStreet's: lis/addi r12=table;
+            # lbzx (or slwi+lhzx) r0 = table[rI]; r12 = base + r0 (scaled by 4
+            # at 0x82A774D8); mtctr; bctr. XenonAnalyse finds none. Most switch
+            # on a trusted argument with no bounds check: entries run while the
+            # offset is word-aligned and lands inside the function
+            # (checked by hand); 0x82B140BC (r9 <= 14,
+            # cmplwi 0x82B14030) and 0x82C929FC (r11 <= 34) are bounded.
+            dict(base=0x8291FE44, r=10, labels=[0x8291FE48, 0x8291FE54, 0x8291FE60, 0x8291FE6C, 0x8291FE78, 0x8291FE84, 0x8291FE90, 0x8291FE9C, 0x8291FEAC, 0x8291FE48, 0x8291FE48, 0x8291FE48, 0x8291FE48, 0x8291FE48, 0x8291FE48, 0x8291FE48, 0x8291FE48]),
+            dict(base=0x829375B4, r=5, labels=[0x829375B8, 0x8293760C, 0x829375D0, 0x829375D0, 0x829375D0, 0x829375B8, 0x829375D8, 0x829375D8, 0x829375B8, 0x829375B8, 0x829375E8, 0x829375D0, 0x829375D0, 0x829375F0, 0x829375F8, 0x829375B8, 0x829375B8, 0x829375B8, 0x829375B8]),
+            dict(base=0x82A1F5D8, r=6, labels=[0x82A1FA94, 0x82A1FAC8, 0x82A1F928, 0x82A1F9DC, 0x82A1F5DC, 0x82A1F700, 0x82A1F818, 0x82A1FB98, 0x82A1FC2C, 0x82A1FC98, 0x82A1FCFC, 0x82A1FD60, 0x82A1FAFC, 0x82A1FB30, 0x82A1FB64, 0x82A1F5DC]),
+            dict(base=0x82A62FBC, r=7, labels=[0x82A62FC0, 0x82A62FCC, 0x82A62FD4, 0x82A62FE0, 0x82A62FEC, 0x82A62FF8, 0x82A6304C, 0x82A63058]),
+            dict(base=0x82A774D8, r=5, labels=[0x82A774DC, 0x82A77540, 0x82A775B4, 0x82A775C8, 0x82A77600, 0x82A77650, 0x82A776AC, 0x82A776B4, 0x82A776BC, 0x82A776C4, 0x82A776CC, 0x82A776E0, 0x82A776F4, 0x82A774DC, 0x82A774DC, 0x82A774DC, 0x82A774DC, 0x82A774DC, 0x82A774DC, 0x82A775BC, 0x82A774DC]),
+            dict(base=0x82B140BC, r=9, labels=[0x82B14100, 0x82B14108, 0x82B14110, 0x82B14118, 0x82B14120, 0x82B14128, 0x82B14130, 0x82B14138, 0x82B14140, 0x82B14148, 0x82B14150, 0x82B1415C, 0x82B14164, 0x82B1416C, 0x82B14174]),
+            dict(base=0x82BF4D7C, r=28, labels=[0x82BF4D80, 0x82BF4D80, 0x82BF4854, 0x82BF4D80, 0x82BF4D80, 0x82BF4D80, 0x82BF4D80, 0x82BF4854, 0x82BF4854, 0x82BF4D80, 0x82BF4854, 0x82BF4854, 0x82BF4D80, 0x82BF4D80, 0x82BF4D80, 0x82BF4D80]),
+            dict(base=0x82C929FC, r=11, labels=[0x82C92A00, 0x82C92A20, 0x82C92AC8, 0x82C92AC8, 0x82C92A00, 0x82C92A00, 0x82C92A58, 0x82C92A00, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92A94, 0x82C92AE4, 0x82C92AE4, 0x82C92A70, 0x82C92A10, 0x82C92D68, 0x82C92DE0, 0x82C92B08, 0x82C92B08, 0x82C9AEB8]),
+        ],
+        # Tail-call stubs that end in `b +4` into the next (.pdata) function,
+        # as the other games': without an explicit size XenonRecomp treats the
+        # b as internal and swallows the neighbour with its jump tables
+        # (0x82847784, 0x824B4EE0/0x824B5110/0x824B52F0, 0x82938568).
+        manual_bounds={
+            0x82847710: 0x10,
+            0x824B4D40: 0x28,
+            0x82938450: 0x18,
+            # Leaf after padding with the 0x829375B4 offset table, up to the
+            # next .pdata function.
+            0x82937570: 0xA8,
+        },
+    ),
 }
 
 NAME = os.environ.get('SB_GAME', 'mw')

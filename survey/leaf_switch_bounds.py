@@ -68,6 +68,13 @@ for bctr in bad:
         e = reach
         while e < gap_end and not is_uncond_exit(word(e)) and word(e) != 0:
             e += 4
+        if e >= gap_end:
+            # No blr/b before the next function: the leaf ends in a tail call
+            # through a pointer (bctr), as NFS: Undercover's vtable
+            # dispatchers do.
+            e = reach
+            while e < gap_end and word(e) not in (0x4E800420, 0):
+                e += 4
         end = e if word(e) == 0 else e + 4
         new_reach = reach
         for a in range(start, end, 4):
