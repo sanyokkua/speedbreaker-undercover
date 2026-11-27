@@ -584,3 +584,7 @@ sb_test(pipeline_wait_budget_test)
 # header only; as Xenia's sampler bindings); the shader and
 # renderer are read.
 sb_test(texture_filters_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)
+# The display scaler's shape (gpu/scaler.h, header only): a front buffer the
+# scaler stretches (DH1's 1152x720 to 1280x720) is shown at the output's
+# shape; renderer.cpp is read to check it presents at it.
+sb_test(scaler_test ARGS ${RT}/gpu/renderer.cpp)

@@ -10,6 +10,9 @@
 #include <game/hfr.h>
 #include <report/report.h>
 #include "command_processor.h"
+#include "scaler.h"
+
+#include <atomic>
 
 void VdQueryVideoMode(XVIDEO_MODE* mode)
 {
@@ -95,10 +98,33 @@ uint32_t VdQuerySystemCommandBuffer(be<uint32_t>* p0, be<uint32_t>* p1)
 
 uint32_t VdSetSystemCommandBuffer(uint32_t unk) { return 0; }
 
+namespace
+{
+    // VdInitializeScalerCommandBuffer's source and output sizes (source << 32 | output).
+    std::atomic<uint64_t> s_scalerSetup{ 0 };
+}
+
+gpu::scaler::Shape gpu::scaler::CurrentDisplayShape(uint32_t frontW, uint32_t frontH)
+{
+    const uint64_t setup = s_scalerSetup.load(std::memory_order_relaxed);
+    return DisplayShape(frontW, frontH, uint32_t(setup >> 32), uint32_t(setup));
+}
+
 uint32_t VdInitializeScalerCommandBuffer(uint32_t sourceXY, uint32_t sourceWH, uint32_t outputXY, uint32_t outputWH,
     uint32_t frontBufferWH, uint32_t verticalFilter, void* verticalParams, uint32_t horizontalFilter,
     void* horizontalParams, void* unk9, be<uint32_t>* dest, uint32_t destCount)
 {
+    // The scaler isn't emulated (the presenter scales), but its shape is
+    // kept: a front buffer of the source's size is shown at the output's
+    // (gpu/scaler.h). Logged when it changes.
+    const uint64_t setup = uint64_t(sourceWH) << 32 | outputWH;
+    if (s_scalerSetup.exchange(setup, std::memory_order_relaxed) != setup)
+    {
+        const gpu::scaler::Shape source = gpu::scaler::Unpack(sourceWH), output = gpu::scaler::Unpack(outputWH);
+        fprintf(stderr, "[video] display scaler: source %ux%u at %u,%u, output %ux%u at %u,%u (front buffer %ux%u)\n",
+            source.width, source.height, sourceXY >> 16, sourceXY & 0xFFFF, output.width, output.height, outputXY >> 16,
+            outputXY & 0xFFFF, frontBufferWH >> 16, frontBufferWH & 0xFFFF);
+    }
     for (uint32_t i = 0; i < destCount; i++)
         dest[i] = 0x80000000;  // type-2 filler packets
     return destCount;

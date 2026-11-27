@@ -15,6 +15,7 @@
 #include "memory_plan.h"
 #include "pipeline_cache_header.h"
 #include "pipeline_wait_budget.h"
+#include "scaler.h"
 #include "shader_translator.h"
 #include "zpd_report.h"
 #include "depth24_glsl.h"
@@ -12621,7 +12622,9 @@ void main()
         if (s_glitch.on && !b)
             RecordGlitchMeasure(front, outW, outH);
         SubmitRecorded(7);  // the presenter's blit comes later in queue order
-        video::SubmitFrontImage(front.image, outW, outH, width, height, between, shift, target, floatImage, floatView);
+        // Shown at the display scaler's shape (gpu/scaler.h: DH1's 1152x720 as 1280x720).
+        const gpu::scaler::Shape shape = gpu::scaler::CurrentDisplayShape(width, height);
+        video::SubmitFrontImage(front.image, outW, outH, shape.width, shape.height, between, shift, target, floatImage, floatView);
 #ifdef SB_GAME_CARBON
         if (floatView && !b)
             CheckFloatFront(front, outW, outH);
