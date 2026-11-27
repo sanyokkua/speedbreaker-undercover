@@ -595,3 +595,6 @@ sb_test(param_gen_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.c
 # The file of pipelines seen that the renderer compiles again at boot
 # (gpu/pipeline_list.h, header only): round trip, foreign and damaged files.
 sb_test(pipeline_list_test)
+# The saved pipeline cache is made on a thread of its own: no cache until then,
+# and the loader may outlive the renderer (gpu/pipeline_cache_load.h, header only).
+sb_test(pipeline_cache_load_test)

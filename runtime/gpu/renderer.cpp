@@ -15,6 +15,7 @@
 #include "memory_plan.h"
 #include "param_gen.h"
 #include "pipeline_cache_header.h"
+#include "pipeline_cache_load.h"
 #include "pipeline_list.h"
 #include "pipeline_wait_budget.h"
 #include "scaler.h"
@@ -1891,11 +1892,14 @@ namespace gpu::renderer
 
         // Vulkan pipeline cache, persisted as GetCachePath()/pipelines.bin.
         // Saved every 600 frames when new pipelines appeared, and at exit.
-        VkPipelineCache s_pipelineCache = VK_NULL_HANDLE;
+        // Made on a thread of its own (gpu/pipeline_cache_load.h): Get() is
+        // VK_NULL_HANDLE until then, and pipelines are made without a cache.
+        gpu::pipeline_cache::BackgroundLoad<VkPipelineCache> s_pipelineCache;
         uint32_t s_pipelinesAtSave = 0;
 
-        void CreatePipelineCache()
+        VkPipelineCache LoadPipelineCache()
         {
+            const auto start = std::chrono::steady_clock::now();
             std::vector<uint8_t> data;
             if (s_shaderCacheEnabled)
                 if (FILE* f = fopen((GetCachePath() / "pipelines.bin").string().c_str(), "rb"))
@@ -1937,13 +1941,25 @@ namespace gpu::renderer
             VkPipelineCacheCreateInfo pcci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
             pcci.initialDataSize = data.size();
             pcci.pInitialData = data.empty() ? nullptr : data.data();
-            if (vkCreatePipelineCache(s_dev, &pcci, nullptr, &s_pipelineCache) != VK_SUCCESS)
+            VkPipelineCache cache = VK_NULL_HANDLE;
+            if (vkCreatePipelineCache(s_dev, &pcci, nullptr, &cache) != VK_SUCCESS)
             {
                 pcci.initialDataSize = 0;
                 pcci.pInitialData = nullptr;
-                Check(vkCreatePipelineCache(s_dev, &pcci, nullptr, &s_pipelineCache), "vkCreatePipelineCache");
+                Check(vkCreatePipelineCache(s_dev, &pcci, nullptr, &cache), "vkCreatePipelineCache");
             }
-            fprintf(stderr, "[renderer] pipeline cache: %zu KB loaded\n", data.size() / 1024);
+            fprintf(stderr, "[renderer] pipeline cache: %zu KB loaded (%.1f s, in the background)\n", data.size() / 1024,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+            return cache;
+        }
+
+        void CreatePipelineCache()
+        {
+            s_pipelineCache.Start([] {
+                SetHostThreadName("nfsmw-cacheload");
+                hostcpu::LeaveReservedCore();
+                return LoadPipelineCache();
+            });
         }
 
         // Saves are serialized (the background saver and the one at exit).
@@ -1991,7 +2007,9 @@ namespace gpu::renderer
 
         void SavePipelineCache()
         {
-            if (!s_pipelineCache || !s_shaderCacheEnabled)
+            // (Not loaded yet: the file on disk stays as it is.)
+            const VkPipelineCache cache = s_pipelineCache.Get();
+            if (!cache || !s_shaderCacheEnabled)
                 return;
             std::lock_guard saveLock(s_pipelineSaveMutex);
             // Workers may add pipelines between the two calls (VK_INCOMPLETE).
@@ -1999,10 +2017,10 @@ namespace gpu::renderer
             std::vector<uint8_t> data;
             for (int attempt = 0;; attempt++)
             {
-                if (vkGetPipelineCacheData(s_dev, s_pipelineCache, &size, nullptr) != VK_SUCCESS || size == 0)
+                if (vkGetPipelineCacheData(s_dev, cache, &size, nullptr) != VK_SUCCESS || size == 0)
                     return;
                 data.resize(size);
-                VkResult r = vkGetPipelineCacheData(s_dev, s_pipelineCache, &size, data.data());
+                VkResult r = vkGetPipelineCacheData(s_dev, cache, &size, data.data());
                 if (r == VK_SUCCESS)
                     break;
                 if (r != VK_INCOMPLETE || attempt == 3)
@@ -3320,7 +3338,7 @@ namespace gpu::renderer
             gpci.pDynamicState = &ds;
             gpci.layout = layout;
             VkPipeline pipeline = VK_NULL_HANDLE;
-            VkResult r = vkCreateGraphicsPipelines(s_dev, s_pipelineCache, 1, &gpci, nullptr, &pipeline);
+            VkResult r = vkCreateGraphicsPipelines(s_dev, s_pipelineCache.Get(), 1, &gpci, nullptr, &pipeline);
             if (r != VK_SUCCESS)
             {
                 fprintf(stderr, "[renderer] pipeline vs %016llx ps %016llx failed: %d\n",
@@ -8183,7 +8201,7 @@ void main()
             cpci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
                 module, "main", nullptr };
             cpci.layout = layout;
-            Check(vkCreateComputePipelines(s_dev, s_pipelineCache, 1, &cpci, nullptr, &pipeline), "compute pipeline");
+            Check(vkCreateComputePipelines(s_dev, s_pipelineCache.Get(), 1, &cpci, nullptr, &pipeline), "compute pipeline");
         }
 
         // Scaled memory's GPU side (see ScaledMemory): made on the first
@@ -8949,7 +8967,7 @@ void main()
             cpci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
                 module, "main", nullptr };
             cpci.layout = s_resolveLayout;
-            Check(vkCreateComputePipelines(s_dev, s_pipelineCache, 1, &cpci, nullptr, out), "resolve pipeline");
+            Check(vkCreateComputePipelines(s_dev, s_pipelineCache.Get(), 1, &cpci, nullptr, out), "resolve pipeline");
         }
 
         // The resolve pipeline for a source at `scale` (see s_resolveDenPipelines).
