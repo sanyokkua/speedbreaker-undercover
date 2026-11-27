@@ -592,3 +592,6 @@ sb_test(scaler_test ARGS ${RT}/gpu/renderer.cpp)
 # the register SQ_CONTEXT_MISC names (DH1's lit passes at the Burrow read it;
 # light spots and shadows slid with the camera); the shader and renderer are read.
 sb_test(param_gen_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)
+# The file of pipelines seen that the renderer compiles again at boot
+# (gpu/pipeline_list.h, header only): round trip, foreign and damaged files.
+sb_test(pipeline_list_test)

@@ -15,6 +15,7 @@
 #include "memory_plan.h"
 #include "param_gen.h"
 #include "pipeline_cache_header.h"
+#include "pipeline_list.h"
 #include "pipeline_wait_budget.h"
 #include "scaler.h"
 #include "shader_translator.h"
@@ -1642,6 +1643,7 @@ namespace gpu::renderer
             ShaderStage stage;
             uint64_t hash;
             TranslatedShader info;         // immutable once loaded
+            std::vector<uint32_t> words;   // the guest's microcode as in memory (for pipelines.list)
             bool hdrGrade = false;         // NFS: Carbon's grade pass with its HDR path (HdrGradePatch)
             std::mutex compileMutex;
             bool vertexCompiled = false;
@@ -1673,6 +1675,34 @@ namespace gpu::renderer
                 return slot.get();
             }();
             return ps;
+        }
+
+        // A guest shader (`words` in guest order, `h` their LoadShader hash),
+        // translated; its SPIR-V is compiled with its first pipeline, on a
+        // pipeline worker.
+#ifdef SB_GAME_CARBON
+        void MarkHdrGradeShader(Shader& shader);  // NFS: Carbon's grade pass (after HdrGradePatch below)
+#endif
+
+        std::unique_ptr<Shader> NewShader(uint32_t type, const uint32_t* words, uint32_t dwords, uint64_t h)
+        {
+            auto shader = std::make_unique<Shader>();
+            shader->stage = type == 0 ? ShaderStage::Vertex : ShaderStage::Pixel;
+            shader->hash = h;
+            shader->words.assign(words, words + dwords);
+            std::vector<uint32_t> ucode(dwords);
+            for (uint32_t i = 0; i < dwords; i++)
+                ucode[i] = __builtin_bswap32(words[i]);
+            shader->info = TranslateShader(shader->stage, ucode.data(), dwords);
+#ifdef SB_GAME_CARBON
+            MarkHdrGradeShader(*shader);
+#endif
+            if (shader->info.ok && shader->info.writesDepth)
+                fprintf(stderr, "[renderer] ps_%016llx exports depth\n", (unsigned long long)h);
+            if (!shader->info.ok)
+                fprintf(stderr, "[renderer] %s_%016llx: translation failed: %s\n", type == 0 ? "vs" : "ps",
+                    (unsigned long long)h, shader->info.error.c_str());
+            return shader;
         }
 
         // IM_LOAD shaders by where they are (LoadShader). A dense frame loads
@@ -1919,6 +1949,46 @@ namespace gpu::renderer
         // Saves are serialized (the background saver and the one at exit).
         std::mutex s_pipelineSaveMutex;
 
+        // GetCachePath()/<name>, replaced whole (a temporary, then a rename).
+        void WriteCacheFile(const char* name, const void* data, size_t size)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(GetCachePath(), ec);
+            std::filesystem::path file = GetCachePath() / name, temp = file;
+            temp += ".tmp";
+            if (FILE* f = fopen(temp.string().c_str(), "wb"))
+            {
+                bool ok = fwrite(data, 1, size, f) == size;
+                ok = fclose(f) == 0 && ok;
+                if (ok)
+                    std::filesystem::rename(temp, file, ec);
+                else
+                    std::filesystem::remove(temp, ec);
+            }
+        }
+
+        // The pipelines drawn with and their guest shaders, saved with
+        // pipelines.bin as GetCachePath()/pipelines.list (gpu/pipeline_list.h)
+        // and compiled again at boot (StartWarmup). The command processor
+        // adds to it (RecordPipeline); the saver reads it.
+        constexpr uint32_t kPipelineKeySize = 80;  // sizeof(PipelineKey)
+        std::mutex s_listMutex;
+        gpu::pipeline_list::List s_list;  // (under s_listMutex)
+        bool s_listDirty = false;         // (under s_listMutex)
+
+        void SavePipelineList()
+        {
+            std::vector<uint8_t> file;
+            {
+                std::lock_guard lock(s_listMutex);
+                if (!s_listDirty)
+                    return;
+                s_listDirty = false;
+                file = gpu::pipeline_list::Serialize(s_list, kPipelineKeySize);
+            }
+            WriteCacheFile("pipelines.list", file.data(), file.size());
+        }
+
         void SavePipelineCache()
         {
             if (!s_pipelineCache || !s_shaderCacheEnabled)
@@ -1938,19 +2008,8 @@ namespace gpu::renderer
                 if (r != VK_INCOMPLETE || attempt == 3)
                     return;
             }
-            std::error_code ec;
-            std::filesystem::create_directories(GetCachePath(), ec);
-            std::filesystem::path file = GetCachePath() / "pipelines.bin", temp = file;
-            temp += ".tmp";
-            if (FILE* f = fopen(temp.string().c_str(), "wb"))
-            {
-                bool ok = fwrite(data.data(), 1, size, f) == size;
-                ok = fclose(f) == 0 && ok;
-                if (ok)
-                    std::filesystem::rename(temp, file, ec);
-                else
-                    std::filesystem::remove(temp, ec);
-            }
+            WriteCacheFile("pipelines.bin", data.data(), size);
+            SavePipelineList();
         }
 
         VkShaderModule CreateModule(const std::vector<uint32_t>& spirv)
@@ -3089,7 +3148,7 @@ namespace gpu::renderer
 
             bool operator==(const PipelineKey& o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
         };
-        static_assert(sizeof(PipelineKey) == 80);
+        static_assert(sizeof(PipelineKey) == kPipelineKeySize);  // (pipelines.list holds them raw)
 
         struct PipelineKeyHash
         {
@@ -3293,6 +3352,14 @@ namespace gpu::renderer
             double createMs = 0;
             uint64_t queuedFrame = 0;
             bool outlasted = false;  // outlasted a frame's wait budget: a real compile, not worth waiting for again
+            // What to build (read by the worker that claims it).
+            PipelineKey key{};
+            VkPipelineLayout layout = VK_NULL_HANDLE;
+            Shader* vs = nullptr;
+            Shader* ps = nullptr;
+            std::atomic<bool> claimed{ false };  // a worker took it (a warm-up job can be queued twice)
+            bool warm = false;      // queued by the warm-up at boot (StartWarmup)
+            bool promoted = false;  // a warm-up job a draw needs, queued again ahead of the rest (CP thread)
         };
         std::unordered_map<PipelineKey, std::shared_ptr<PendingPipeline>, PipelineKeyHash> s_pendingPipelines;
         const uint32_t s_pipelineThreads = [] {
@@ -3310,35 +3377,225 @@ namespace gpu::renderer
         uint32_t s_pipelineSkips = 0;         // draws skipped this frame, their pipeline not ready
         gpu::pipeline_wait::Budget s_pipelineWait(s_pipelineWaitUs, s_pipelineLoadWaitUs);  // CP thread
 
+        // Two queues: pipelines draws wait for, then the warm-up's. The
+        // warm-up runs on all workers but one, so a pipeline a draw needs
+        // never waits behind more than one compile.
         std::mutex s_compileMutex;
         std::condition_variable s_compileCv;
-        std::deque<std::function<void()>> s_compileQueue;
+        std::deque<std::shared_ptr<PendingPipeline>> s_compileQueue;  // (under s_compileMutex)
+        std::deque<std::shared_ptr<PendingPipeline>> s_warmQueue;     // (under s_compileMutex)
         uint32_t s_compileActive = 0;         // jobs running (under s_compileMutex)
+        uint32_t s_warmActive = 0;            // warm-up jobs running (under s_compileMutex)
         bool s_compileStopping = false;
+
+        // The warm-up's progress, for its log line when the last job ends.
+        struct WarmupStats
+        {
+            std::atomic<uint32_t> left{ 0 };
+            std::atomic<uint32_t> failed{ 0 };
+            std::atomic<uint64_t> compileUs{ 0 };
+            std::chrono::steady_clock::time_point start;
+        };
+        WarmupStats s_warmup;
+
+        // One warm-up job less (and StartWarmup's own hold on the count).
+        void WarmupLeftOneLess()
+        {
+            if (s_warmup.left.fetch_sub(1) == 1)
+                fprintf(stderr, "[warmup] done: pipelines.list compiled in %.1f s (%.1f s of compiles; %u failed)\n",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - s_warmup.start).count(),
+                    double(s_warmup.compileUs.load()) / 1e6, s_warmup.failed.load());
+        }
+
+        void RunPipelineJob(PendingPipeline& job)
+        {
+            if (job.claimed.exchange(true))
+                return;  // (a promoted warm-up job: the other queue's entry ran it)
+            auto start = std::chrono::steady_clock::now();
+            VkPipeline pipeline = BuildPipeline(job.key, job.layout, *job.vs, *job.ps);
+            // Progress for the hang watchdog: a cold cache's compiles
+            // can hold a frame for 20 s on a slow driver (Windows).
+            report::g_pipelinesBuilt.fetch_add(1, std::memory_order_relaxed);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            {
+                std::lock_guard lock(job.mutex);
+                job.pipeline = pipeline;
+                job.createMs = ms;
+                job.done = true;
+            }
+            job.cv.notify_all();
+            if (job.warm)
+            {
+                s_warmup.compileUs.fetch_add(uint64_t(ms * 1000), std::memory_order_relaxed);
+                if (!pipeline)
+                    s_warmup.failed.fetch_add(1, std::memory_order_relaxed);
+                WarmupLeftOneLess();
+            }
+        }
 
         void CompileWorker()
         {
             SetHostThreadName("nfsmw-pipelines");
             hostcpu::LeaveReservedCore();  // started by the command processor
+            const uint32_t warmWorkers = std::max(1u, s_pipelineThreads - 1);
             while (true)
             {
-                std::function<void()> job;
+                std::shared_ptr<PendingPipeline> job;
+                bool warm = false;
                 {
                     std::unique_lock lock(s_compileMutex);
-                    s_compileCv.wait(lock, [] { return s_compileStopping || !s_compileQueue.empty(); });
+                    s_compileCv.wait(lock, [&] {
+                        return s_compileStopping || !s_compileQueue.empty() || (!s_warmQueue.empty() && s_warmActive < warmWorkers);
+                    });
                     if (s_compileStopping)
                         return;
-                    job = std::move(s_compileQueue.front());
-                    s_compileQueue.pop_front();
+                    warm = s_compileQueue.empty();
+                    auto& queue = warm ? s_warmQueue : s_compileQueue;
+                    job = std::move(queue.front());
+                    queue.pop_front();
                     s_compileActive++;
+                    s_warmActive += warm;
                 }
-                job();
+                RunPipelineJob(*job);
                 {
                     std::lock_guard lock(s_compileMutex);
                     s_compileActive--;
+                    s_warmActive -= warm;
                 }
                 s_compileCv.notify_all();
             }
+        }
+
+        void StartCompileWorkers()
+        {
+            static std::once_flag started;
+            std::call_once(started, [] {
+                for (uint32_t i = 0; i < s_pipelineThreads; i++)
+                    std::thread(CompileWorker).detach();
+            });
+        }
+
+        // A new pipeline for `key`, queued (or, without workers, built now).
+        std::shared_ptr<PendingPipeline> QueuePipeline(const PipelineKey& key, VkPipelineLayout layout, Shader* vs, Shader* ps, bool warm)
+        {
+            auto job = std::make_shared<PendingPipeline>();
+            job->queuedFrame = s_frame;
+            job->key = key;
+            job->layout = layout;
+            job->vs = vs;
+            job->ps = ps;
+            job->warm = warm;
+            s_pendingPipelines[key] = job;
+            if (s_pipelineThreads == 0)
+            {
+                HitchTimer hitchTimer(s_hitch.pipelineMs);
+                RunPipelineJob(*job);
+                return job;
+            }
+            StartCompileWorkers();
+            {
+                std::lock_guard lock(s_compileMutex);
+                (warm ? s_warmQueue : s_compileQueue).push_back(job);
+            }
+            s_compileCv.notify_all();
+            return job;
+        }
+
+        // Pipelines already in s_list (CP thread): each is added once.
+        std::unordered_set<PipelineKey, PipelineKeyHash> s_listedKeys;
+        std::unordered_set<uint64_t> s_listedShaders;
+
+        // Adds a pipeline (and its guest shaders) to pipelines.list.
+        void RecordPipeline(const PipelineKey& key, const Shader& vs, const Shader& ps)
+        {
+            if (!s_shaderCacheEnabled || !s_listedKeys.insert(key).second)
+                return;
+            std::lock_guard lock(s_listMutex);
+            for (const Shader* s : { &vs, &ps })
+                if (!s->words.empty() && s_listedShaders.insert(s->hash).second)
+                    s_list.shaders.push_back({ s->stage == ShaderStage::Vertex ? 0u : 1u, s->hash, s->words });
+            gpu::pipeline_list::Key bytes(kPipelineKeySize);
+            std::memcpy(bytes.data(), &key, kPipelineKeySize);
+            s_list.keys.push_back(std::move(bytes));
+            s_listDirty = true;
+        }
+
+        // At boot (CP thread, before the first draw): the shaders and
+        // pipelines of pipelines.list, translated now and compiled on the
+        // workers in the background. A draw that needs one first takes it
+        // from the warm-up queue (promoted); one ready is just used.
+        // NFSMW_PIPELINE_WARMUP=0: none (the list is still kept).
+        void StartWarmup()
+        {
+            if (!s_shaderCacheEnabled || s_pipelineThreads == 0)
+                return;
+            std::vector<uint8_t> data;
+            if (FILE* f = fopen((GetCachePath() / "pipelines.list").string().c_str(), "rb"))
+            {
+                fseek(f, 0, SEEK_END);
+                long size = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (size > 0)
+                {
+                    data.resize(size_t(size));
+                    if (fread(data.data(), 1, data.size(), f) != data.size())
+                        data.clear();
+                }
+                fclose(f);
+            }
+            if (data.empty())
+                return;
+            gpu::pipeline_list::List list;
+            if (!gpu::pipeline_list::Parse(data.data(), data.size(), kPipelineKeySize, list))
+            {
+                fprintf(stderr, "[warmup] pipelines.list (%zu KB) is from another build or damaged: set aside\n", data.size() / 1024);
+                return;
+            }
+            const bool warm = [] { const char* v = std::getenv("NFSMW_PIPELINE_WARMUP"); return !v || v[0] != '0'; }();
+            const auto start = std::chrono::steady_clock::now();
+            for (gpu::pipeline_list::Shader& s : list.shaders)
+            {
+                auto& slot = s_shaders[s.hash];
+                if (!slot)
+                    slot = NewShader(s.type, s.words.data(), uint32_t(s.words.size()), s.hash);
+            }
+            const double translateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            s_warmup.start = std::chrono::steady_clock::now();
+            s_warmup.left = 1;  // (held until all are queued)
+            uint32_t queued = 0, dropped = 0;
+            for (const gpu::pipeline_list::Key& bytes : list.keys)
+            {
+                PipelineKey key;
+                std::memcpy(&key, bytes.data(), kPipelineKeySize);
+                auto vs = s_shaders.find(key.vs);
+                Shader* ps = key.ps == kDepthOnlyPsHash ? DepthOnlyPixelShader() : nullptr;
+                if (!ps)
+                    if (auto it = s_shaders.find(key.ps); it != s_shaders.end())
+                        ps = it->second.get();
+                if (vs == s_shaders.end() || !ps || !vs->second->info.ok || !ps->info.ok ||
+                    vs->second->stage != ShaderStage::Vertex || ps->stage != ShaderStage::Pixel)
+                {
+                    dropped++;
+                    continue;
+                }
+                RecordPipeline(key, *vs->second, *ps);  // (kept in the next save)
+                if (!warm || s_pendingPipelines.count(key))
+                    continue;
+                s_warmup.left.fetch_add(1);
+                QueuePipeline(key, GetTextureLayout(*vs->second, *ps).pipeline, vs->second.get(), ps, true);
+                queued++;
+            }
+            {
+                std::lock_guard lock(s_listMutex);
+                s_listDirty = dropped != 0;  // (unchanged otherwise: nothing to save)
+            }
+            fprintf(stderr, "[warmup] pipelines.list: %zu shaders (translated in %.0f ms), %u pipelines compiling in the background%s%s\n",
+                list.shaders.size(), translateMs, queued, dropped ? std::format(", {} dropped", dropped).c_str() : "",
+                warm ? "" : " (NFSMW_PIPELINE_WARMUP=0)");
+            if (queued)
+                WarmupLeftOneLess();
+            else
+                s_warmup.left = 0;
         }
 
         // The pipeline for `key`; VK_NULL_HANDLE with `pending` set while a
@@ -3359,47 +3616,23 @@ namespace gpu::renderer
             }
             std::shared_ptr<PendingPipeline> job;
             if (auto p = s_pendingPipelines.find(key); p != s_pendingPipelines.end())
-                job = p->second;
-            else
             {
-                s_hitch.pipelines++;
-                job = std::make_shared<PendingPipeline>();
-                job->queuedFrame = s_frame;
-                s_pendingPipelines[key] = job;
-                Shader* vs = s_shaders[key.vs].get();
-                Shader* ps = s_shaders[key.ps].get();
-                auto build = [job, key, layout, vs, ps] {
-                    auto start = std::chrono::steady_clock::now();
-                    VkPipeline pipeline = BuildPipeline(key, layout, *vs, *ps);
-                    // Progress for the hang watchdog: a cold cache's compiles
-                    // can hold a frame for 20 s on a slow driver (Windows).
-                    report::g_pipelinesBuilt.fetch_add(1, std::memory_order_relaxed);
-                    {
-                        std::lock_guard lock(job->mutex);
-                        job->pipeline = pipeline;
-                        job->createMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-                        job->done = true;
-                    }
-                    job->cv.notify_all();
-                };
-                if (s_pipelineThreads == 0)
+                job = p->second;
+                // A warm-up job not started yet: ahead of the queue now.
+                if (job->warm && !job->promoted && !job->claimed.load())
                 {
-                    HitchTimer hitchTimer(s_hitch.pipelineMs);
-                    build();
-                }
-                else
-                {
-                    static std::once_flag started;
-                    std::call_once(started, [] {
-                        for (uint32_t i = 0; i < s_pipelineThreads; i++)
-                            std::thread(CompileWorker).detach();
-                    });
+                    job->promoted = true;
                     {
                         std::lock_guard lock(s_compileMutex);
-                        s_compileQueue.push_back(std::move(build));
+                        s_compileQueue.push_front(job);
                     }
                     s_compileCv.notify_all();
                 }
+            }
+            else
+            {
+                s_hitch.pipelines++;
+                job = QueuePipeline(key, layout, s_shaders[key.vs].get(), s_shaders[key.ps].get(), false);
             }
             {
                 HitchTimer hitchTimer(s_hitch.pipelineMs);
@@ -3431,14 +3664,30 @@ namespace gpu::renderer
                 }
             }
             if (s_logPipelines)
-                fprintf(stderr, "[pipeline] vs %016llx ps %016llx: %.1f ms to compile, ready %.1f ms and %llu frames after the first draw\n",
+                fprintf(stderr, "[pipeline] vs %016llx ps %016llx: %.1f ms to compile, ready %.1f ms and %llu frames after the first draw%s\n",
                     (unsigned long long)key.vs, (unsigned long long)key.ps, job->createMs,
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job->queued).count(),
-                    (unsigned long long)(s_frame - job->queuedFrame));
+                    job->warm ? 0.0 : std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job->queued).count(),
+                    job->warm ? 0ull : (unsigned long long)(s_frame - job->queuedFrame),
+                    job->warm ? (job->promoted ? " (warm-up, promoted)" : " (warm-up)") : "");
             s_stats.pipelines++;
             s_pipelines[key] = job->pipeline;
+            if (job->pipeline)
+                RecordPipeline(key, *job->vs, *job->ps);
             s_pendingPipelines.erase(key);
             return job->pipeline;
+        }
+
+        // Pipelines still compiling (OnSwap's log; warm-up jobs done but not
+        // drawn with yet are not).
+        size_t PipelinesCompiling()
+        {
+            size_t n = 0;
+            for (auto& [key, job] : s_pendingPipelines)
+            {
+                std::lock_guard lock(job->mutex);
+                n += !job->done;
+            }
+            return n;
         }
 
         // ---------------------------------------------------------------
@@ -7120,6 +7369,17 @@ void main()
                                            "    vec3 hdrPre = vec3(0.0);\n    float hdrVignette = 1.0;\n");
             return true;
         }
+
+        void MarkHdrGradeShader(Shader& shader)
+        {
+            if (shader.hash == kHdrGradeShader && shader.stage == ShaderStage::Pixel && shader.info.ok)
+            {
+                shader.hdrGrade = HdrGradePatch(shader.info.glsl);
+                fprintf(stderr, shader.hdrGrade ? "[renderer] HDR: the grade pass (ps_%016llx) can take its scene's float copy\n"
+                                                : "[renderer] HDR: the grade pass (ps_%016llx) isn't the one expected: no float highlights\n",
+                    (unsigned long long)shader.hash);
+            }
+        }
 #endif
 
         void Resolve()
@@ -9762,6 +10022,7 @@ void main()
 #endif
         CreateGlitchWatch();
         Flush();
+        StartWarmup();
         fprintf(stderr, "[renderer] ready: guest physical memory %s (%llu MB)\n",
             !s_shadowMode ? "imported" : s_shadowInVram ? "copied for the GPU, in VRAM" : "copied for the GPU, in host memory",
             (unsigned long long)(kSharedSize >> 20));
@@ -9782,12 +10043,7 @@ void main()
     {
         if (!s_vk || dwords == 0 || type > 1)
             return;
-        auto hash = [type](const uint32_t* w, uint32_t n) {
-            uint64_t h = 0xCBF29CE484222325ull ^ type;
-            for (uint32_t i = 0; i < n; i++)
-                h = (h ^ w[i]) * 0x100000001B3ull;
-            return h;
-        };
+        auto hash = [type](const uint32_t* w, uint32_t n) { return gpu::pipeline_list::HashWords(type, w, n); };
         ShaderCache& c = *s_shaderCache;
         ShaderCacheEntry* e = nullptr;
         if (c.on)
@@ -9827,28 +10083,7 @@ void main()
         {
             HitchTimer hitchTimer(s_hitch.shaderMs);
             s_hitch.shaders++;
-            slot = std::make_unique<Shader>();
-            slot->stage = type == 0 ? ShaderStage::Vertex : ShaderStage::Pixel;
-            slot->hash = h;
-            std::vector<uint32_t> ucode(dwords);
-            for (uint32_t i = 0; i < dwords; i++)
-                ucode[i] = __builtin_bswap32(words[i]);
-            slot->info = TranslateShader(slot->stage, ucode.data(), dwords);
-#ifdef SB_GAME_CARBON
-            if (h == kHdrGradeShader && slot->stage == ShaderStage::Pixel && slot->info.ok)
-            {
-                slot->hdrGrade = HdrGradePatch(slot->info.glsl);
-                fprintf(stderr, slot->hdrGrade ? "[renderer] HDR: the grade pass (ps_%016llx) can take its scene's float copy\n"
-                                               : "[renderer] HDR: the grade pass (ps_%016llx) isn't the one expected: no float highlights\n",
-                    (unsigned long long)h);
-            }
-#endif
-            if (slot->info.ok && slot->info.writesDepth)
-                fprintf(stderr, "[renderer] ps_%016llx exports depth\n", (unsigned long long)h);
-            if (!slot->info.ok)
-                fprintf(stderr, "[renderer] %s_%016llx: translation failed: %s\n", type == 0 ? "vs" : "ps",
-                    (unsigned long long)h, slot->info.error.c_str());
-            // Compiled to SPIR-V with its first pipeline, on a pipeline worker.
+            slot = NewShader(type, words, dwords, h);
         }
         if (e)
             e->shader = slot.get();
@@ -12871,18 +13106,20 @@ void main()
         if (s_pipelineSkips)
         {
             static uint32_t logged = 0;
-            if (logged++ < 300)
-                fprintf(stderr, "[pipelines] frame %llu: %u draws skipped, %zu pipelines compiling\n",
-                    (unsigned long long)frame, s_pipelineSkips, s_pendingPipelines.size());
             s_stats.pipelineSkips += s_pipelineSkips;
+            if (logged++ < 300)
+                fprintf(stderr, "[pipelines] frame %llu: %u draws skipped (%llu in all), %zu pipelines compiling\n",
+                    (unsigned long long)frame, s_pipelineSkips, (unsigned long long)s_stats.pipelineSkips, PipelinesCompiling());
             s_pipelineSkips = 0;
         }
-        // New pipelines are saved every 10 s, on a thread of its own: getting a
-        // large cache's data and writing it took ~70 ms, a visible stutter
-        // when it ran here (the pipeline cache is internally synchronized).
-        if (s_vk && frame % 600 == 0 && s_stats.pipelines != s_pipelinesAtSave)
+        // New pipelines (the warm-up's too) are saved every 10 s, on a thread
+        // of its own: getting a large cache's data and writing it took ~70 ms,
+        // a visible stutter when it ran here (the pipeline cache is internally
+        // synchronized).
+        const uint32_t built = uint32_t(report::g_pipelinesBuilt.load(std::memory_order_relaxed));
+        if (s_vk && frame % 600 == 0 && built != s_pipelinesAtSave)
         {
-            s_pipelinesAtSave = uint32_t(s_stats.pipelines);
+            s_pipelinesAtSave = built;
             static std::atomic<bool> saving{ false };
             if (!saving.exchange(true))
                 std::thread([] {
@@ -12966,6 +13203,7 @@ void main()
             // cache being saved); drop the queued ones.
             std::unique_lock lock(s_compileMutex);
             s_compileQueue.clear();
+            s_warmQueue.clear();
             s_compileCv.wait_for(lock, std::chrono::seconds(2), [] { return s_compileActive == 0; });
             s_compileStopping = true;
         }
