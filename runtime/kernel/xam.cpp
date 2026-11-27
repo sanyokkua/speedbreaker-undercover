@@ -12,6 +12,7 @@
 #include <user/paths.h>
 #include "overlapped.h"
 #include <kernel/function.h>
+#include "dispatcher.h"
 #include <fstream>
 
 namespace
@@ -32,11 +33,20 @@ namespace
     }
 }
 
-struct XamListener : KernelObject
+// A notification listener is a waitable object on the console: signalled
+// while notifications are queued (Xenia's XNotifyListener sets its wait
+// handle on enqueue and resets it once the queue is empty). Deathly Hallows -
+// Part 1's Wwise/XAudio thread waits on one with two events (wait-any); it
+// was refused as not waitable (STATUS_INVALID_HANDLE) and the thread spun,
+// so the main thread waited forever for the sound engine.
+struct XamListener : Waitable
 {
     uint32_t id{};
     uint64_t areas{};
     std::vector<std::tuple<uint32_t, uint32_t>> notifications;
+    std::atomic<bool> pending{ false };  // !notifications.empty(), read under dispatcher::Lock()
+
+    bool IsSignaledLocked() const override { return pending; }
 
     XamListener(const XamListener&) = delete;
     XamListener& operator=(const XamListener&) = delete;
@@ -176,13 +186,23 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 {
-    std::lock_guard lock(gListenersMutex);
-    for (const auto& listener : gListeners)
+    bool queued = false;
     {
-        if (((1 << MSG_AREA(dwId)) & listener->areas) == 0)
-            continue;
+        std::lock_guard lock(gListenersMutex);
+        for (const auto& listener : gListeners)
+        {
+            if (((1 << MSG_AREA(dwId)) & listener->areas) == 0)
+                continue;
 
-        listener->notifications.emplace_back(dwId, dwParam);
+            listener->notifications.emplace_back(dwId, dwParam);
+            listener->pending = true;
+            queued = true;
+        }
+    }
+    if (queued)
+    {
+        std::lock_guard lock(dispatcher::Lock());
+        dispatcher::NotifyAllLocked();
     }
 }
 
@@ -204,6 +224,7 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
                     *pParam = std::get<1>(listener.notifications[i]);
 
                 listener.notifications.erase(listener.notifications.begin() + i);
+                listener.pending = !listener.notifications.empty();
 
                 return true;
             }
@@ -221,6 +242,7 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
             *pParam = std::get<1>(listener.notifications[0]);
 
         listener.notifications.erase(listener.notifications.begin());
+        listener.pending = !listener.notifications.empty();
 
         return true;
     }

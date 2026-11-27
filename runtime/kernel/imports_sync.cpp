@@ -3,6 +3,9 @@
 // Synchronisation exports on top of kernel/dispatcher. Signatures and
 // return values follow Xenia's xboxkrnl_threading.cc.
 #include <stdafx.h>
+#include <mutex>
+#include <typeinfo>
+#include <unordered_set>
 #include "dispatcher.h"
 #include "function.h"
 #include "overlapped.h"
@@ -49,7 +52,20 @@ namespace
         {
             Waitable* w = WaitableFromHandle(h);
             if (w == nullptr)
+            {
+                // Once per handle value: what the game waited on that isn't waitable here.
+                static std::mutex m;
+                static std::unordered_set<uint32_t> seen;
+                std::lock_guard lock(m);
+                if (seen.insert(h).second)
+                {
+                    const bool kernel = h != 0xFFFFFFFF && IsKernelObject(h);
+                    KernelObject* o = kernel ? GetKernelObject(h) : nullptr;
+                    fprintf(stderr, "[kernel] wait on handle %08X: not waitable (%s)\n", h,
+                        !kernel ? "not a kernel handle" : o ? typeid(*o).name() : "no object");
+                }
                 return STATUS_INVALID_HANDLE;
+            }
             objects.push_back(w);
         }
         return WaitForObjects(objects, waitAll, Deadline(timeout));
