@@ -46,6 +46,18 @@ uint32_t XamGetSystemVersion()
     return 0;
 }
 
+// With an XOVERLAPPED, XAM completes it and the call returns ERROR_IO_PENDING
+// (as Xenia). Games check for that: DH1's save loader (sub_8215A1C0) treats
+// any other return, even success, as a failed load ("Load Failed. The save
+// file appears to be damaged") and never reads the file.
+static uint32_t CompleteXamCall(XXOVERLAPPED* overlapped, uint32_t result)
+{
+    if (!overlapped)
+        return result;
+    CompleteOverlapped(overlapped, result);
+    return 0x3E5;  // ERROR_IO_PENDING
+}
+
 uint32_t XamContentGetCreator(uint32_t userIndex, const XCONTENT_DATA* contentData, be<uint32_t>* isCreator, be<uint64_t>* xuid, XXOVERLAPPED* overlapped)
 {
     if (isCreator)
@@ -54,12 +66,12 @@ uint32_t XamContentGetCreator(uint32_t userIndex, const XCONTENT_DATA* contentDa
     if (xuid)
         *xuid = 0xB13EBABEBABEBABE;
 
-    return 0;
+    return CompleteXamCall(overlapped, 0);
 }
 
-uint32_t XamContentGetDeviceState()
+uint32_t XamContentGetDeviceState(uint32_t deviceId, XXOVERLAPPED* overlapped)
 {
-    return 0;
+    return CompleteXamCall(overlapped, 0);
 }
 
 uint32_t XamUserGetSigninInfo(uint32_t userIndex, uint32_t flags, XUSER_SIGNIN_INFO* info)
@@ -90,12 +102,7 @@ uint32_t XamShowDeviceSelectorUI
     XamNotifyEnqueueEvent(9, true);
     *deviceId = 1;
     XamNotifyEnqueueEvent(9, false);
-    if (overlapped)
-    {
-        CompleteOverlapped(overlapped, 0);
-        return 0x3E5;  // ERROR_IO_PENDING
-    }
-    return 0;
+    return CompleteXamCall(overlapped, 0);
 }
 
 uint32_t XGetLanguage()

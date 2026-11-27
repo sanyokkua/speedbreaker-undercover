@@ -573,3 +573,6 @@ add_test(NAME vblank_lock_sim_multiples COMMAND vblank_lock_sim --multiples)
 # the threads already waiting before a later one (kernel/wait_queue.h, header
 # only; Half-Blood Prince's render thread took its own release back).
 sb_test(dispatcher_fifo_test)
+# XAM exports given an XOVERLAPPED complete it and return ERROR_IO_PENDING (read from
+# the sources): DH1's save loader failed every load ("Load Failed") on XamContentGetCreator.
+sb_test(xam_overlapped_test ARGS ${RT}/kernel/xam.cpp ${RT}/kernel/imports_unleashed.cpp ${RT}/kernel/imports_user.cpp)
