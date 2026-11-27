@@ -52,6 +52,12 @@ namespace gpu::renderer
     // indexed draws). In copy mode this is a resolve.
     void Draw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize);
 
+    // Whether a draw now would be drawn for every tile of predicated tiling:
+    // untiled rendering, in the tile it draws (window offset 0,0), in a
+    // colour or depth mode (not a resolve). The command processor then runs
+    // a predicated draw of any tile (gpu/tile_predicate.h).
+    bool DrawsEveryTile();
+
     // Submit recorded work without waiting.
     void Submit();
 

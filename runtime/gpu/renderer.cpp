@@ -2757,8 +2757,10 @@ namespace gpu::renderer
         // has no EDRAM limit (and renders at 1x), so tile 0's draws cover the
         // whole target, later tiles' draws are skipped, and each tile's
         // resolve and clear read the target at screen coordinates (EDRAM
-        // rectangle minus the window offset). NFSMW_TILING=1 keeps the
-        // per-tile rendering.
+        // rectangle minus the window offset). A draw predicated to later
+        // tiles only (a bin mask per draw: Half-Blood Prince's right-half
+        // objects) runs in tile 0 too (DrawsEveryTile, gpu/tile_predicate.h).
+        // NFSMW_TILING=1 keeps the per-tile rendering.
 
         // The window offset to undo for the current MSAA surface, or 0,0.
         std::pair<int32_t, int32_t> TileShift()
@@ -10114,6 +10116,21 @@ void main()
             }
         }
         fprintf(stderr, "%s\n", line);
+    }
+
+    bool DrawsEveryTile()
+    {
+        // Predicated tiling (an MSAA surface with the window offset on)
+        // drawn untiled, in the tile drawn (TileShift 0,0: the others are
+        // skipped), a colour or depth draw (a resolve stays per tile).
+        if (!s_untiled || Reg<reg::RB_SURFACE_INFO>().msaa_samples == xenos::MsaaSamples::k1X ||
+            !Reg<reg::PA_SU_SC_MODE_CNTL>().vtx_window_offset_enable)
+            return false;
+        const auto mode = Reg<reg::RB_MODECONTROL>().edram_mode;
+        if (mode != xenos::EdramMode::kColorDepth && mode != xenos::EdramMode::kDepthOnly)
+            return false;
+        auto [shiftX, shiftY] = TileShift();
+        return shiftX == 0 && shiftY == 0;
     }
 
     void Draw(uint32_t initiatorValue, uint32_t dmaBase, uint32_t dmaSizeValue)

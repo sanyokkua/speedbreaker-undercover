@@ -19,9 +19,11 @@
 #include "renderer.h"
 #include "gpu_clock.h"
 #include "zpd_report.h"
+#include "tile_predicate.h"
 #include <kernel/write_watch.h>
 #include <debug/timeline.h>
 #include <report/report.h>
+#include <tuple>
 #include <unordered_set>
 
 namespace gpu
@@ -78,6 +80,19 @@ namespace gpu
         std::atomic<uint64_t> s_draws{ 0 };
         std::atomic<uint32_t> s_counter{ 0 };        // Xenia's counter_: swaps + vblanks (two threads count)
         uint64_t s_binMask = ~0ull, s_binSelect = ~0ull;
+        // NFSMW_TILE_PREDICATE=0: the old rule, a predicated draw runs only in
+        // the tiles its bin mask selects (A/B for gpu/tile_predicate.h).
+        const bool s_tilePredicate = [] { const char* v = std::getenv("NFSMW_TILE_PREDICATE"); return !v || v[0] != '0'; }();
+        // NFSMW_LOG_PREDICATE=1 (a diagnostic): every 600 frames, the
+        // predicated packets by bin mask, bin select and draw or not: how many
+        // ran and were skipped, and "tile": the draws only DrawsEveryTile
+        // runs (never drawn by the old rule). Command processor thread only.
+        const bool s_logPredicate = std::getenv("NFSMW_LOG_PREDICATE") != nullptr;
+        struct PredicateCount
+        {
+            uint64_t ran = 0, skipped = 0, tile = 0;
+        };
+        std::map<std::tuple<uint64_t, uint64_t, bool>, PredicateCount> s_predicateCounts;
         std::atomic<bool> s_started{ false };
         std::atomic<uint32_t> s_vblanks{ 0 };        // guest vblank interrupts raised
         // The WAIT_REG_MEM being polled past its first check, for the hang
@@ -444,10 +459,26 @@ namespace gpu
             uint32_t opcode = (packet >> 8) & 0x7F;
             uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
 
-            if ((packet & 1) && ((s_binSelect & s_binMask) == 0 || opcode == PM4_XE_SWAP))
+            if (packet & 1)
             {
-                r.Skip(count);  // predicated packet that doesn't apply
-                return true;
+                // A predicated packet: runs in the tiles its bin mask selects;
+                // untiled, a scene draw in any tile runs in the tile drawn
+                // (gpu/tile_predicate.h).
+                const bool draw = opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2;
+                const bool everyTile = draw && renderer::DrawsEveryTile();
+                const bool runs = opcode != PM4_XE_SWAP &&
+                    tile_predicate::Runs(s_binMask, s_binSelect, draw, everyTile && s_tilePredicate);
+                if (s_logPredicate)
+                {
+                    PredicateCount& c = s_predicateCounts[{ s_binMask, s_binSelect, draw }];
+                    (runs ? c.ran : c.skipped)++;
+                    c.tile += draw && (s_binMask & s_binSelect) == 0 && tile_predicate::Runs(s_binMask, s_binSelect, true, everyTile);
+                }
+                if (!runs)
+                {
+                    r.Skip(count);  // predicated packet that doesn't apply
+                    return true;
+                }
             }
 
             auto compare = [](uint32_t func, uint32_t value, uint32_t ref) {
@@ -546,6 +577,15 @@ namespace gpu
                 timeline::Mark(timeline::Swap);
                 uint64_t frame = ++s_frames;
                 renderer::OnSwap(frame);
+                if (s_logPredicate && frame % 600 == 0)
+                {
+                    for (const auto& [key, c] : s_predicateCounts)
+                        fprintf(stderr, "[predicate] frames %llu-%llu mask %llX select %llX %s: ran %llu skipped %llu tile %llu\n",
+                            (unsigned long long)(frame - 599), (unsigned long long)frame, (unsigned long long)std::get<0>(key),
+                            (unsigned long long)std::get<1>(key), std::get<2>(key) ? "draw" : "other", (unsigned long long)c.ran,
+                            (unsigned long long)c.skipped, (unsigned long long)c.tile);
+                    s_predicateCounts.clear();
+                }
                 // Every 120 frames: frame rate and per-frame costs since the last line.
                 // Frame times are guest time (guesttime::NowNs: the host's
                 // on desktop), so a frame across a suspension isn't a hitch

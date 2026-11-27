@@ -98,6 +98,11 @@ sb_test(edge_snap_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.c
 # (gpu/rect_list.h, header only; Half-Blood Prince's scene clear left its
 # lower-left half); the shader is read to check it applies the rule.
 sb_test(rect_list_test ARGS ${RT}/gpu/shader_translator.cpp)
+# Predicated tiling drawn untiled (gpu/tile_predicate.h, header only): a draw
+# whose bin mask is only a later tile's runs in tile 0 (Half-Blood Prince's
+# right-half objects went missing); command_processor.cpp and renderer.cpp
+# are read to check they apply it.
+sb_test(tile_predicate_test ARGS ${RT}/gpu/command_processor.cpp ${RT}/gpu/renderer.cpp)
 # GitHub #19's menu borders (gpu/edge_bars.h, header only): the Showcase's
 # vignette stretched to the screen's edges, the Blacklist bio's black panel
 # filled all round, at every screen shape; renderer.cpp is read to check it
