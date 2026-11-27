@@ -14,6 +14,8 @@
 #include "function.h"
 #include "xex.h"
 #include "xbox.h"
+#include <mutex>
+#include <set>
 #include "heap.h"
 #include "memory.h"
 #include <memory>
@@ -139,6 +141,15 @@ uint32_t FscSetCacheElementCount()
 uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, uint16_t SizeOfBuffer, be<uint32_t>* RequiredSize)
 {
     uint32_t data[4]{};
+    uint32_t size = 4;
+    {
+        // Once per setting: which ones a game reads, and with what buffer.
+        static std::mutex seenLock;
+        static std::set<uint32_t> seen;
+        std::lock_guard lock(seenLock);
+        if (seen.insert((uint32_t(Category) << 16) | Setting).second)
+            fprintf(stderr, "[xconfig] category %u setting 0x%04X, buffer %u bytes\n", Category, Setting, SizeOfBuffer);
+    }
 
     switch (Category)
     {
@@ -155,6 +166,7 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
                 default:
                     return 1;
             }
+            break;
         }
 
         case 0x0003:
@@ -187,8 +199,11 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
                     break;
 
                 // XCONFIG_USER_COUNTRY
+                // (one byte, as Xenia's: a 4-byte big-endian 103 read as a
+                // byte would be country 0)
                 case 0x000E:
-                    data[0] = ByteSwap(103);
+                    reinterpret_cast<uint8_t*>(data)[0] = 103; // XC_COUNTRY_US
+                    size = 1;
                     break;
 
                 default:
@@ -197,7 +212,7 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
         }
     }
 
-    *RequiredSize = 4;
+    *RequiredSize = size;
     memcpy(Buffer, data, std::min((size_t)SizeOfBuffer, sizeof(data)));
 
     return 0;
