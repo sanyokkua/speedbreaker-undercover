@@ -24,6 +24,7 @@
 #include "shared_memory_glsl.h"
 #include "shadow_lend.h"
 #include "split_views.h"
+#include "texture_filters.h"
 #include "xenos/registers.h"
 
 #include <kernel/vmem.h>
@@ -4559,6 +4560,9 @@ void main()
         }
 
         std::unordered_map<uint64_t, VkSampler> s_samplers;
+        // NFSMW_SHADER_FILTERS=0: sample with the fetch constant's filters
+        // only, ignoring the shader's tfetch overrides (A/B switch).
+        const bool s_shaderFilters = [] { const char* v = std::getenv("NFSMW_SHADER_FILTERS"); return !v || v[0] != '0'; }();
         bool s_loadMips = true;  // Settings > Video > Mipmaps, as applied (ApplyLiveSettings)
 
         // Anisotropic filtering on linearly filtered textures: 16x on a
@@ -4679,11 +4683,13 @@ void main()
         };
 
         // The full lookup (GetTexture below keeps its results).
-        VkImageView LookupTexture(uint32_t slot, TexDim dim, VkSampler& sampler, TextureLookup* out)
+        // `fetch`: the slot's fetch constant with the shader's filter
+        // overrides applied (gpu/texture_filters.h, see the draw).
+        VkImageView LookupTexture(uint32_t slot, const uint32_t* fetch, TexDim dim, VkSampler& sampler, TextureLookup* out)
         {
             const bool cube = dim == TexDim::kCube, volume = dim == TexDim::k3D;
             xenos::xe_gpu_texture_fetch_t f;
-            memcpy(&f, &s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6], sizeof(f));
+            memcpy(&f, fetch, sizeof(f));
             sampler = s_sampler;
             const VkImageView dummy = s_dummy[cube ? 2 : volume ? 1 : 0].view;
             if (f.type != xenos::FetchConstantType::kTexture)
@@ -4739,9 +4745,7 @@ void main()
             {
                 s_drawUsesLoggedTexture = true;
                 s_loggedTextureFetch = std::format("slot {} dim {} fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", slot, int(dim),
-                    s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6], s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + 1],
-                    s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + 2], s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + 3],
-                    s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + 4], s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + 5]);
+                    fetch[0], fetch[1], fetch[2], fetch[3], fetch[4], fetch[5]);
             }
             uint32_t pitchAligned = 0, rowBytes = 0, size;
             if (f.tiled)
@@ -5315,12 +5319,11 @@ void main()
             return s_textureCache->recent[(h * 0x9E3779B97F4A7C15ull) >> 54];
         }
 
-        VkImageView GetTexture(uint32_t slot, TexDim dim, VkSampler& sampler)
+        VkImageView GetTexture(uint32_t slot, const uint32_t* fetch, TexDim dim, VkSampler& sampler)
         {
             TextureCache& c = *s_textureCache;
             if (!c.on)
-                return LookupTexture(slot, dim, sampler, nullptr);
-            const uint32_t* fetch = &s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6];
+                return LookupTexture(slot, fetch, dim, sampler, nullptr);
             TextureCacheEntry& e = c.slots[uint32_t(dim)][slot & 31];
             const bool drawScaled = s_drawScaled && s_scaled.enabled;
             const uint64_t epoch = writewatch::WriteEpoch();
@@ -5360,7 +5363,7 @@ void main()
                 e.texture->checkedEpoch = checked;
                 uint32_t loads = s_hitch.textures;
                 TextureLookup lookup;
-                VkImageView view = LookupTexture(slot, dim, sampler, &lookup);
+                VkImageView view = LookupTexture(slot, fetch, dim, sampler, &lookup);
                 bool reloaded = s_hitch.textures != loads;
                 if (reloaded && writewatch::WriteEpoch() != epoch)
                 {
@@ -5382,7 +5385,7 @@ void main()
             }
             c.misses++;
             TextureLookup lookup;
-            VkImageView view = LookupTexture(slot, dim, sampler, &lookup);
+            VkImageView view = LookupTexture(slot, fetch, dim, sampler, &lookup);
             if (!lookup.texture)
             {
                 c.uncached++;
@@ -10581,7 +10584,22 @@ void main()
                 VkDescriptorImageInfo& ii = textureInfos[d * 32 + n];
                 ii = { s_sampler, s_dummy[d].view, VK_IMAGE_LAYOUT_GENERAL };
                 if (!(s_exp & 8))  // NFSMW_GPU_EXP bit 8: placeholders only (texture cost experiment)
-                    ii.imageView = GetTexture(n, d == 0 ? TexDim::k2D : d == 1 ? TexDim::k3D : TexDim::kCube, ii.sampler);
+                {
+                    // The shader's tfetch filters over the fetch constant's
+                    // (gpu/texture_filters.h): the pixel shader's for a slot
+                    // both stages read. The patched words are the texture
+                    // cache's key too, so its sampler follows them.
+                    // NFSMW_SHADER_FILTERS=0: the fetch constant's alone.
+                    const uint32_t* regs = &s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + n * 6];
+                    uint32_t fetch[6];
+                    memcpy(fetch, regs, sizeof(fetch));
+                    if (s_shaderFilters)
+                    {
+                        const uint16_t filters = ((layout.psMasks[d] >> n) & 1) ? s_ps->info.textureFilters[n] : s_vs->info.textureFilters[n];
+                        fetch[3] = gpu::texture_filters::Apply(fetch[3], filters);
+                    }
+                    ii.imageView = GetTexture(n, fetch, d == 0 ? TexDim::k2D : d == 1 ? TexDim::k3D : TexDim::kCube, ii.sampler);
+                }
             }
 #ifdef SB_GAME_CARBON
         // HDR: the grade pass samples its scene's float copy instead of the

@@ -5,6 +5,7 @@
 // (BSD license); comments name the rule where it isn't obvious.
 #include "shader_translator.h"
 #include "shared_memory_glsl.h"
+#include "texture_filters.h"
 
 #include "xenos/ucode.h"
 
@@ -179,6 +180,7 @@ float xmul(float a, float b)
             int indent = 1;
             bool usesRelativeRegisters = false;
             uint32_t maxRegister = 0;
+            uint32_t seenFilterSlots = 0;  // texture slots whose filters are recorded
 
             // Previous vfetch_full, for vfetch_mini.
             VertexFetchInstruction lastFullFetch{};
@@ -780,6 +782,14 @@ float xmul(float a, float b)
                     return;
                 }
                 uint32_t slot = op.fetch_constant_index();
+                // The instruction's filters over the fetch constant's
+                // (gpu/texture_filters.h); the first fetch of a slot decides.
+                if (!(seenFilterSlots & (1u << slot)))
+                {
+                    seenFilterSlots |= 1u << slot;
+                    out.textureFilters[slot] = gpu::texture_filters::Pack(uint32_t(op.mag_filter()), uint32_t(op.min_filter()),
+                        uint32_t(op.mip_filter()), uint32_t(op.aniso_filter()));
+                }
                 if (op.is_predicated())
                 {
                     Line(std::format("if (p0 == {}) {{", op.predicate_condition() ? "true" : "false"));

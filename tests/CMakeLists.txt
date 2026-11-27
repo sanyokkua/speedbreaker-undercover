@@ -580,3 +580,7 @@ sb_test(xam_overlapped_test ARGS ${RT}/kernel/xam.cpp ${RT}/kernel/imports_unlea
 # the 2 s after a loading screen: two long frames at most on a cold cache
 # (gpu/pipeline_wait_budget.h, header only).
 sb_test(pipeline_wait_budget_test)
+# A tfetch instruction's filters over the fetch constant's (gpu/texture_filters.h,
+# header only; as Xenia's sampler bindings); the shader and
+# renderer are read.
+sb_test(texture_filters_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)

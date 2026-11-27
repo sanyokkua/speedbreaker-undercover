@@ -51,6 +51,10 @@ namespace gpu
         uint32_t texture2DMask = 0;      // texture fetch slots used, by dimension
         uint32_t texture3DMask = 0;
         uint32_t textureCubeMask = 0;
+        // Per texture fetch slot: the filters the shader's tfetch instruction
+        // sets over the fetch constant's (gpu/texture_filters.h, as Xenia's
+        // sampler bindings). The first tfetch of a slot decides.
+        uint16_t textureFilters[32] = {};  // 0: none
         // Float constants the shader reads (by absolute index, 0..255 of its
         // stage). Packed: those reads use slots 0..N-1 in index order, so the
         // host uploads only the N used constants (not with relative reads).
