@@ -94,6 +94,10 @@ sb_test(edge_bars_test)
 # at scaled resolutions (gpu/edge_snap.h, header only; OotP's line along the
 # top and left of black screens); the shader and renderer are read.
 sb_test(edge_snap_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)
+# Rectangle lists in either Direct3D corner order cover their rectangle
+# (gpu/rect_list.h, header only; Half-Blood Prince's scene clear left its
+# lower-left half); the shader is read to check it applies the rule.
+sb_test(rect_list_test ARGS ${RT}/gpu/shader_translator.cpp)
 # GitHub #19's menu borders (gpu/edge_bars.h, header only): the Showcase's
 # vignette stretched to the screen's edges, the Blacklist bio's black panel
 # filled all round, at every screen shape; renderer.cpp is read to check it

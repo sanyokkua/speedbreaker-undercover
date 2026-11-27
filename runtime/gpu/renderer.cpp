@@ -6047,11 +6047,14 @@ void main()
         void PropagateDrawClear(RenderTarget* src, uint32_t msaa, bool stencil, gpu::draw_clear::Rect r)
         {
             namespace dc = gpu::draw_clear;
+            const bool is64 = !src->depth && Is64bpp(src->format);
+            // Only what the console's clear can have covered (an untiled
+            // draw's scissor is its whole target).
+            r = dc::EdramBounds(r, src->base, src->pitch, msaa, is64);
             r.x1 = std::min(r.x1, int32_t(src->guestWidth));
             r.y1 = std::min(r.y1, int32_t(src->guestHeight));
             if (r.x1 <= r.x0 || r.y1 <= r.y0)
                 return;
-            const bool is64 = !src->depth && Is64bpp(src->format);
             for (auto& [key, slot] : s_targets)
             {
                 RenderTarget* t = slot.get();
@@ -6062,6 +6065,11 @@ void main()
                 tr.x1 = std::min(tr.x1, int32_t(t->guestWidth));
                 tr.y1 = std::min(tr.y1, int32_t(t->guestHeight));
                 if (tr.x1 <= tr.x0 || tr.y1 <= tr.y0)
+                    continue;
+                // The source rectangle of the pixels kept (a clipped
+                // destination must not squeeze the whole source into it).
+                const dc::Rect sr = dc::MapRect(tr, t->msaa, msaa);
+                if (sr.x1 <= sr.x0 || sr.y1 <= sr.y0)
                     continue;
                 VkFormatProperties fp{};
                 vkGetPhysicalDeviceFormatProperties(s_vk->physical, t->vkFormat, &fp);
@@ -6082,7 +6090,7 @@ void main()
                     LendTargetWrite(t, false);
                 Begin();
                 FullBarrier();
-                const VkRect2D s = HostRect(src->scale, r.x0, r.y0, r.x1, r.y1);
+                const VkRect2D s = HostRect(src->scale, sr.x0, sr.y0, sr.x1, sr.y1);
                 const VkRect2D d = HostRect(t->scale, tr.x0, tr.y0, tr.x1, tr.y1);
                 VkImageBlit blit{};
                 const VkImageAspectFlags aspect = t->depth ? VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)

@@ -1345,38 +1345,59 @@ void main()
     // runVertex() has ONE call site: compilers inline every call, and the
     // rectangle's synthesised corner used to add three more copies of the
     // whole shader (RADV took ~10x longer to compile every vertex shader).
-    uint first = vid, count = 1u;
+    uint first = vid, count = 1u, pick = 0u;
     if (mode == 1u)
     {
-        // Rectangle: v0 v1 v2 given, v3 = v1 + v2 - v0. Triangles (0,1,2) (1,3,2).
+        // Rectangle (gpu/rect_list.h): v0 v1 v2 given, then the diagonal's
+        // ends a and b with the 4th corner between them (a + b - the corner
+        // at the right angle). The second triangle's vertices run all three
+        // given ones: pick 1 a, 2 the 4th corner, 3 b.
         uint rect = vid / 6u, k = vid % 6u;
-        uint corner = k == 0u ? 0u : k == 1u ? 1u : k == 2u ? 2u : k == 3u ? 1u : k == 4u ? 3u : 2u;
-        first = rect * 3u + (corner < 3u ? corner : 0u);
-        count = corner < 3u ? 1u : 3u;
+        first = rect * 3u + (k < 3u ? k : 0u);
+        count = k < 3u ? 1u : 3u;
+        pick = k < 3u ? 0u : k - 2u;
     }
     else if (mode == 2u)
     {
         uint quad = vid / 6u, k = vid % 6u;
         first = quad * 4u + (k == 0u ? 0u : k == 1u ? 1u : k == 2u ? 2u : k == 3u ? 0u : k == 4u ? 2u : 3u);
     }
-    vec4 pos = vec4(0.0), pos0 = vec4(0.0);
-    vec4 it[16], it0[16];
+    vec4 pos = vec4(0.0), pos0 = vec4(0.0), pos1 = vec4(0.0);
+    vec4 it[16], it0[16], it1[16];
     for (uint c = 0u; c < count; c++)
     {
         runVertex(first + c);
-        if (count == 3u && c == 0u)
-        {
-            pos0 = o_position; it0 = o_interpT;
-        }
-        else if (c <= 1u)
+        if (count == 1u)
         {
             pos = o_position; it = o_interpT;
         }
+        else if (c == 0u)
+        {
+            pos0 = o_position; it0 = o_interpT;
+        }
+        else if (c == 1u)
+        {
+            pos1 = o_position; it1 = o_interpT;
+        }
         else
         {
-            // Same order as before: (v1 + v2) - v0.
-            pos = pos + o_position - pos0;
-            for (int i = 0; i < 16; i++) it[i] = it[i] + o_interpT[i] - it0[i];
+            // The corner at the right angle (RightAngleCorner): opposite the
+            // longest edge. Direct3D puts it at v0 or at v1.
+            vec2 e01 = pos1.xy - pos0.xy, e02 = o_position.xy - pos0.xy, e12 = o_position.xy - pos1.xy;
+            float d01 = dot(e01, e01), d02 = dot(e02, e02), d12 = dot(e12, e12);
+            uint corner = (d02 > d01 && d02 > d12) ? 1u : (d01 > d02 && d01 > d12) ? 2u : 0u;
+            // a = corner + 1, b = corner + 2 (mod 3).
+            vec4 pa = corner == 0u ? pos1 : corner == 1u ? o_position : pos0;
+            vec4 pb = corner == 0u ? o_position : corner == 1u ? pos0 : pos1;
+            vec4 pcorner = corner == 0u ? pos0 : corner == 1u ? pos1 : o_position;
+            pos = pick == 1u ? pa : pick == 3u ? pb : pa + pb - pcorner;
+            for (int i = 0; i < 16; i++)
+            {
+                vec4 ia = corner == 0u ? it1[i] : corner == 1u ? o_interpT[i] : it0[i];
+                vec4 ib = corner == 0u ? o_interpT[i] : corner == 1u ? it0[i] : it1[i];
+                vec4 ic = corner == 0u ? it0[i] : corner == 1u ? it1[i] : o_interpT[i];
+                it[i] = pick == 1u ? ia : pick == 3u ? ib : ia + ib - ic;
+            }
         }
     }
 @@VS_OUTPUTS@@    // PA_CL_VTE_CNTL formats (as Xenia): bit 1 W is not 1/W, bit 2 XY were

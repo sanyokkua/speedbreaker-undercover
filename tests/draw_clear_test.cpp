@@ -107,6 +107,25 @@ int main(int argc, char** argv)
         r = MapRect({ 1, 1, 2, 2 }, 0, 2);
         CHECK(r.x1 >= r.x0 && r.y1 >= r.y0 && (r.x1 - r.x0) == 0);
     }
+    {
+        // Half-Blood Prince: a 320x736 4x clear (pitch 320, depth at base 736)
+        // into the untiled 2x scene (pitch 640) reached the renderer as the
+        // whole 1280x2048 target; only the pitch's columns and the rows left
+        // in EDRAM are the clear's ((2048 - 736) / 8 tile rows of 16 sample
+        // rows, 2 a 4x pixel).
+        Rect r = EdramBounds({ 0, 0, 1280, 2048 }, 736, 320, 2, false);
+        CHECK(r.x0 == 0 && r.y0 == 0 && r.x1 == 320 && r.y1 == 1312);
+        r = MapRect(r, 2, 1);
+        CHECK(r.x1 == 640 && r.y1 == 1312);
+        // Already inside: unchanged; an untiled 1x 1280 clear keeps its width.
+        r = EdramBounds({ 0, 0, 320, 736 }, 736, 320, 2, false);
+        CHECK(r.x1 == 320 && r.y1 == 736);
+        r = EdramBounds({ 0, 0, 1280, 720 }, 0, 1280, 0, false);
+        CHECK(r.x1 == 1280 && r.y1 == 720);
+        // A base past EDRAM covers nothing.
+        r = EdramBounds({ 0, 0, 1280, 720 }, 2048, 1280, 0, false);
+        CHECK(r.x1 == r.x0 || r.y1 == r.y0);
+    }
     if (argc > 1)
     {
         std::ifstream f(argv[1]);
@@ -115,6 +134,8 @@ int main(int argc, char** argv)
         const std::string src = ss.str();
         CHECK(src.find("draw_clear::Classify(") != std::string::npos);
         CHECK(src.find("PropagateDrawClear(") != std::string::npos);
+        CHECK(src.find("r = dc::EdramBounds(r, src->base, src->pitch, msaa, is64);") != std::string::npos);
+        CHECK(src.find("HostRect(src->scale, sr.x0, sr.y0, sr.x1, sr.y1)") != std::string::npos);
     }
     if (g_failures)
     {

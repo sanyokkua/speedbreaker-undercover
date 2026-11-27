@@ -21,6 +21,7 @@
 // copy is exact whatever the layouts' sample order.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 namespace gpu::draw_clear
@@ -63,6 +64,29 @@ namespace gpu::draw_clear
         if (o.y1 < o.y0)
             o.y1 = o.y0;
         return o;
+    }
+
+    inline constexpr uint32_t kEdramTiles = 2048;  // 10 MB of 5120-byte tiles
+
+    // The part of `r` (pixels of a layout at `base`, `pitch`, `msaa`) the
+    // console's clear can have written: the pitch's columns and the rows
+    // left in EDRAM after `base`. Untiled rendering draws tile 0 over the
+    // whole target and its scissor is the whole target, so a clear drawn
+    // without a viewport transform (Half-Blood Prince's 320x736 4x clear:
+    // VTE 0x300, scissor 8192) reached the renderer as the target's 1280x2048:
+    // the copy took the stale columns past the pitch with it, squeezed into
+    // the other layout's width, and the scene showed only in its first 320
+    // columns, old frames beyond.
+    inline Rect EdramBounds(Rect r, uint32_t base, uint32_t pitch, uint32_t msaa, bool is64bpp)
+    {
+        const uint32_t perRow = TilesPerRow(pitch, msaa, is64bpp);
+        const uint32_t tileRows = base < kEdramTiles && perRow ? (kEdramTiles - base) / perRow : 0;
+        const int32_t rows = int32_t(tileRows * 16 / SamplesY(msaa));
+        r.x1 = std::min(r.x1, int32_t(pitch));
+        r.y1 = std::min(r.y1, rows);
+        r.x0 = std::min(r.x0, r.x1);
+        r.y0 = std::min(r.y0, r.y1);
+        return r;
     }
 
     // The draw's state that decides whether it is a clear.
