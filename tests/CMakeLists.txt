@@ -588,3 +588,7 @@ sb_test(texture_filters_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/rend
 # scaler stretches (DH1's 1152x720 to 1280x720) is shown at the output's
 # shape; renderer.cpp is read to check it presents at it.
 sb_test(scaler_test ARGS ${RT}/gpu/renderer.cpp)
+# Pixel parameter generation (gpu/param_gen.h, header only): vPos and VFACE in
+# the register SQ_CONTEXT_MISC names (DH1's lit passes at the Burrow read it;
+# light spots and shadows slid with the camera); the shader and renderer are read.
+sb_test(param_gen_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)

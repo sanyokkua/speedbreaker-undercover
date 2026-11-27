@@ -96,7 +96,8 @@ layout(push_constant) uniform DrawConstants
     float alphaRef;
     uint flags;           // bit 0: apply posScale; bits 1-3: vertex W/XY/Z formats
     vec4 posScale;        // NDC = pos.xy * posScale.xy + posScale.zw * pos.w
-    uvec4 vfRedirect[4];  // guest start, size, ring byte offset: vertex data snapshots
+    uvec4 vfRedirect[4];  // guest start, size, ring byte offset: vertex data snapshots;
+                          // [0].w, [1].w: guest pixels per host pixel in x, y (paramGen(), as float bits)
     uint constRing;       // ring byte offset of this draw's XenosConstants, see constRel()
     float edgeSnapX;      // half a guest pixel in NDC per axis (0: off), see the position epilogue
     float edgeSnapY;      // (two floats: a vec2 would be aligned to 8 bytes, past the C++ struct's 116)
@@ -1312,6 +1313,19 @@ vec4 constRel(int index, int rel)
 }}
 )", stage == ShaderStage::Vertex ? "pc.vsConstBase" : "pc.psConstBase");
         if (stage == ShaderStage::Pixel)
+            g += R"(#ifdef PARAM_GEN
+// gpu/param_gen.h: |xy| the pixel's whole-number position in the target (in
+// guest pixels: pc.vfRedirect[0].w and [1].w hold guest pixels per host
+// pixel), x's sign bit set for a back face, zw 0 (not a point).
+vec4 paramGen()
+{
+    vec2 xy = (gl_FragCoord.xy - 0.5) * vec2(uintBitsToFloat(pc.vfRedirect[0].w), uintBitsToFloat(pc.vfRedirect[1].w));
+    float x = gl_FrontFacing ? xy.x : uintBitsToFloat(floatBitsToUint(xy.x) | 0x80000000u);
+    return vec4(x, xy.y, 0.0, 0.0);
+}
+#endif
+)";
+        if (stage == ShaderStage::Pixel)
             g += "vec4 killv(bool c) { if (c) killed = true; return vec4(0.0); }\nfloat kills(bool c) { if (c) killed = true; return 0.0; }\n";
         else
             g += "vec4 killv(bool c) { return vec4(0.0); }\nfloat kills(bool c) { return 0.0; }\n";
@@ -1442,6 +1456,13 @@ void main()
             g += "    for (int i = 0; i < R_COUNT; i++) r[i] = vec4(0.0);\n";
             for (uint32_t i = 0; i < std::min(16u, regCount); i++)
                 g += std::format("#ifdef IN{0}\n    r[{0}] = i_i{0};\n#endif\n", i);
+            // ps_param_gen (gpu/param_gen.h): the host defines PARAM_GEN as
+            // the register per pipeline; it replaces that interpolator.
+            // Literal indices, so ScalarizeRegisters still applies.
+            g += "#ifdef PARAM_GEN\n";
+            for (uint32_t i = 0; i < std::min(16u, regCount); i++)
+                g += std::format("#if PARAM_GEN == {0}\n    r[{0}] = paramGen();\n#endif\n", i);
+            g += "#endif\n";
             g += t.body;
             // discard costs hidden-surface removal on tile-based GPUs: only
             // shaders with kills, and pipelines with alpha test (ALPHA_TEST).
