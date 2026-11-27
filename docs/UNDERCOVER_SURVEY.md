@@ -107,7 +107,8 @@ untiled rendering (`NFSMW_TILING=1`) and upscaling (`NFSMW_RESOLUTION=1x`); bin 
 (`SET_BIN_MASK`/`SET_BIN_SELECT`) drops only draws of masks the game never selects. Not reproduced
 with frame dumps (they slow the game). Suspected: the render thread and the render jobs (the
 boot crash's pair) building a frame's lists at once, which the console's scheduling prevents.
-Also ruled out (2026-11-27): the write watch's neighbour-page race (next section).
+Also ruled out (2026-11-27): the write watch's neighbour-page race (next section), and
+per-tile bin masks ("Fixes from the HBP port": every scene draw's mask selects tile 0).
 
 ## Fixes from the OotP port (2026-11-27)
 
@@ -145,6 +146,37 @@ sometimes free roam).
 
 With all of them on (and the final recompile), a new game played through the intro and the prologue chase in 600 s with no crash and no `[glitch]`; an earlier build with the runtime fixes reached free roam; `ctest`: 98 tests,
 `swapchain_use_test` passes alone (it can fail in a parallel run, as before).
+
+## Fixes from the HBP port (2026-11-27, v0.1.1)
+
+The Half-Blood Prince port (`hp6-hbp-x360-port`, from the OotP tree) found three more general
+runtime bugs. All are in; none changed what Undercover shows. Runs: 300 s each, a throwaway
+`HOME`, the disc extracted fresh, a new game, the script above (the intro, the prologue chase,
+the first free-roam drive), `NFSMW_GLITCH_WATCH=1`. A: the build before (cf7bc43); B: the
+fixes with `NFSMW_TILE_PREDICATE=0`; C: the fixes. All three played the same route with no crash
+or hang (`[perf]` lines at 60.0 fps: A 49 of 111, B 44 of 131, C 58 of 139; the rest are
+loading and movies); `[glitch]` frames 4 / 7 / 7 (scores 6.5-141, at movie cuts and fades in all
+three builds; the 32x18 grid can't see a small sign vanish, so this is no proof either way).
+
+- **Wait order** (`kernel/wait_queue.h`, `tests/dispatcher_fifo_test.cpp`): a semaphore's count
+  or an auto-reset event's signal goes to the threads already waiting, oldest first, as NT does
+  inside the release. HBP's render thread took its own release back and the main thread waited
+  forever. Undercover boots and plays as before.
+- **Rectangle lists in both corner orders** (`gpu/rect_list.h`, `tests/rect_list_test.cpp`): the
+  vertex shader assumed the right angle at v0 (`v3 = v1 + v2 - v0`); HBP's clears and resolves
+  put it at v1. Now the corner opposite the longest edge. Plus `draw_clear.h` `EdramBounds`: a
+  drawn clear is cut to the pitch's columns and the EDRAM rows after its base. Menus, movies and
+  the chase look the same before and after (shots of runs A and C at the same times).
+- **Predicated tiling with per-tile bin masks** (`gpu/tile_predicate.h`,
+  `tests/tile_predicate_test.cpp`): untiled, a predicated scene draw runs in tile 0 when its mask
+  selects any tile (HBP's right-half-only draws were never drawn). Undercover is not affected.
+  `NFSMW_LOG_PREDICATE=1` over run C: three tiles (selects `80000003`, `C`, `30`); scene draws
+  carry mask `FFFFFFFF` in tile 0 and `8000003F` in tiles 1 and 2; masks `3`, `C`, `30` (about
+  15 draws and 290 other packets a frame each) are each tile's own copy and run in their tile.
+  Draws only the new rule runs: 0 in the whole run. So this is not the single-frame flicker.
+  `NFSMW_TILE_PREDICATE=0` keeps the old rule.
+
+`ctest -j3`: 103 of 103 passed.
 
 ## Feature parity
 

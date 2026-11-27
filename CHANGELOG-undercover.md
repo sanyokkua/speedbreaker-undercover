@@ -3,28 +3,38 @@
 What changed in each SpeedBreaker: Undercover build, newest first. The game shows the entry once,
 the first time a new version starts (offline: it's built into the game).
 
-## Unreleased
+## v0.1.1
 
-Runtime and recompiler fixes found by the Harry Potter and the Order of the Phoenix port (same
-runtime), checked against Undercover one by one (docs/UNDERCOVER_SURVEY.md, "Fixes from the
-OotP port").
+### Fixed
 
-- **Vertex data could be read half-rewritten** (the write watch opened a whole 16 KB host page
-  while another 4 KB guest page in it still had a GPU read pending). Undercover hit it in 407
-  frames of a 10-minute run; it caused no glitch seen there and does not explain the
-  single-frame object flicker. `NFSMW_GUARD_NEIGHBOURS=0` restores the old rule; diagnostics
-  `NFSMW_GUARD_RACE=1` and `NFSMW_GLITCH_WATCH=1`.
-- **Clears drawn as 4x MSAA rectangles reach the 1x layout of the same EDRAM** (the scene colour
-  and three depth targets in Undercover). `NFSMW_DRAW_CLEAR=0` turns it off.
-- **No light line along the top and left edges** of dark menus (the GPS map, fades) at internal
-  resolutions above 1x. `NFSMW_EDGE_SNAP=0` turns it off.
-- `ExGetXConfigSetting`: the AV-region answer no longer falls through into the user settings,
-  and the country is one byte.
-- Recompiler: XenonRecomp patches 0012-0014. A branch to an address that starts no function is
-  now an error instead of a silently dropped call. Undercover's 69 such branches were all in
-  code that never runs (functions decoded from the 8 data bytes before exception-handling
-  functions, which `survey/eh_data_ranges.py` now marks as data). Rebuild the tools to get the
-  patches: `rm -rf tools/XenonRecomp && scripts/setup_tools.sh`.
+- **No light line along the top and left edges** of dark screens (the GPS map, fades) at an
+  Internal Resolution above 1x.
+- Fixes found while porting the Harry Potter Xbox 360 games, which run on the same runtime. None
+  was seen to change Undercover; each makes it behave more like the console:
+  - Threads waiting for the same signal get it in the order they started waiting, as on the
+    console (Half-Blood Prince froze at its first logo without this).
+  - Rectangles the game draws to clear or copy the screen are filled whichever corner it gives
+    first, and a clear reaches only the video memory the console's would.
+  - Objects the game marks for only part of the screen are drawn (they blinked or vanished in
+    Half-Blood Prince). Undercover marks its objects for the whole screen, so this is not the
+    cause of its one-frame flicker.
+  - Vertex data can no longer be read while the game is half-way through rewriting it (one-frame
+    "exploding" models in Order of the Phoenix).
+  - Clearing the screen also clears the same video memory seen in another layout.
+  - A system-settings answer (video region and country) fixed; Undercover doesn't use them.
+  - The game's code is translated more exactly: 69 branches that were left out are now in; all
+    were in code that never runs.
+
+### Known issues
+
+- Now and then a sign, a texture or a reflection disappears for a single frame (under
+  investigation).
+
+### For testers
+
+A/B switches (environment variables, 0 = the old behaviour): `NFSMW_EDGE_SNAP`,
+`NFSMW_DRAW_CLEAR`, `NFSMW_GUARD_NEIGHBOURS`, `NFSMW_TILE_PREDICATE`. Diagnostics:
+`NFSMW_GLITCH_WATCH=1`, `NFSMW_GUARD_RACE=1`, `NFSMW_LOG_PREDICATE=1`.
 
 ## v0.1.0
 
