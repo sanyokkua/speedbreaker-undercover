@@ -10,7 +10,8 @@
 // on its own condition variable (wait_queue.h's WaitSignal): a change to an
 // object wakes the threads queued on it, NotifyAllLocked every wait (for
 // conditions outside an object's own state: a thread's exit, XNotify, the
-// resume). NFSMW_WAKE_ALL=1: every change wakes every wait (as before, A/B).
+// resume). NFSMW_WAKE_ALL=1: every change wakes every wait (A/B; a signal per
+// wait, so slower than the old single broadcast).
 //
 // Timeouts and timers run on guest time (guesttime::NowNs()), which stands
 // still while the game is suspended: a timed wait or a timer that would come
