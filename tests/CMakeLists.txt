@@ -576,3 +576,7 @@ sb_test(dispatcher_fifo_test)
 # XAM exports given an XOVERLAPPED complete it and return ERROR_IO_PENDING (read from
 # the sources): DH1's save loader failed every load ("Load Failed") on XamContentGetCreator.
 sb_test(xam_overlapped_test ARGS ${RT}/kernel/xam.cpp ${RT}/kernel/imports_unleashed.cpp ${RT}/kernel/imports_user.cpp)
+# How long the command processor waits for compiling pipelines a frame, and
+# the 2 s after a loading screen: two long frames at most on a cold cache
+# (gpu/pipeline_wait_budget.h, header only).
+sb_test(pipeline_wait_budget_test)

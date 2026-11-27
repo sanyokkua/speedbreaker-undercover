@@ -14,6 +14,7 @@
 #include "edge_snap.h"
 #include "memory_plan.h"
 #include "pipeline_cache_header.h"
+#include "pipeline_wait_budget.h"
 #include "shader_translator.h"
 #include "zpd_report.h"
 #include "depth24_glsl.h"
@@ -3270,9 +3271,8 @@ namespace gpu::renderer
         // traffic car streaming in mid-race froze it for 2 s. The command
         // processor waits briefly (NFSMW_PIPELINE_WAIT_US a frame, default
         // 3000: disk cache hits make it), then skips the draw until it is
-        // ready, as Xenia does. For 2 s after a loading screen (a frame of
-        // under 64 draws) it waits in full, so scene setup, including
-        // anything the game renders once, is drawn exactly.
+        // ready, as Xenia does. For 2 s after a loading screen the budget is
+        // larger (NFSMW_PIPELINE_LOAD_WAIT_US, gpu/pipeline_wait_budget.h).
         // NFSMW_PIPELINE_THREADS=<n> (default: a third of the cores, at most
         // 4; 0 compiles on the command processor). Settings > Advanced >
         // Asynchronous Shaders off (NFSMW_ASYNC_PIPELINES=0): always wait.
@@ -3295,13 +3295,14 @@ namespace gpu::renderer
             return std::clamp(std::thread::hardware_concurrency() / 3, 1u, 4u);
         }();
         const int64_t s_pipelineWaitUs = [] { const char* v = std::getenv("NFSMW_PIPELINE_WAIT_US"); return v ? int64_t(std::atoll(v)) : 3000; }();
+        const int64_t s_pipelineLoadWaitUs = [] { const char* v = std::getenv("NFSMW_PIPELINE_LOAD_WAIT_US"); return v ? int64_t(std::atoll(v)) : 50000; }();
         const bool s_logPipelines = std::getenv("NFSMW_PIPELINE_LOG") != nullptr;
-        uint64_t s_drawsAtSwap = 0, s_waitPipelinesUntil = 120;  // boot: wait in full
+        uint64_t s_drawsAtSwap = 0;
         const uint32_t s_shadowExp = [] { const char* v = std::getenv("NFSMW_SHADOW_EXP"); return v ? uint32_t(std::atoi(v)) : 0u; }();
         const bool s_shadowExpAlt = [] { const char* v = std::getenv("NFSMW_SHADOW_EXP_ALT"); return v && v[0] == '1'; }();
         bool ShadowExpOn(uint32_t bit) { return (s_shadowExp & bit) && (!s_shadowExpAlt || s_frame / 120 % 2 == 1); }
         uint32_t s_pipelineSkips = 0;         // draws skipped this frame, their pipeline not ready
-        int64_t s_pipelineWaitLeftUs = 0;     // this frame's wait budget left
+        gpu::pipeline_wait::Budget s_pipelineWait(s_pipelineWaitUs, s_pipelineLoadWaitUs);  // CP thread
 
         std::mutex s_compileMutex;
         std::condition_variable s_compileCv;
@@ -3401,7 +3402,7 @@ namespace gpu::renderer
                 // Waits share one budget a frame (cache hits make it); once it
                 // is spent, draws just check. A per-draw wait made a pipeline
                 // used by 13 draws cost 47 ms a frame while it compiled.
-                if (!settings::GetBool(settings::Id::AsyncShaders) || s_frame < s_waitPipelinesUntil)
+                if (!settings::GetBool(settings::Id::AsyncShaders))
                     job->cv.wait(lock, [&] { return job->done; });
                 else
                 {
@@ -3410,9 +3411,9 @@ namespace gpu::renderer
                     // only checked afterwards, not waited for every frame
                     // (that cost 3 ms a frame for as long as it compiled).
                     auto start = std::chrono::steady_clock::now();
-                    int64_t budget = job->outlasted ? 0 : std::max<int64_t>(s_pipelineWaitLeftUs, 0);
+                    int64_t budget = job->outlasted ? 0 : s_pipelineWait.LeftUs();
                     bool ready = job->cv.wait_for(lock, std::chrono::microseconds(budget), [&] { return job->done; });
-                    s_pipelineWaitLeftUs -= std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+                    s_pipelineWait.Spend(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
                     if (!ready && budget > 0)
                         job->outlasted = true;
                     if (!ready)
@@ -12827,10 +12828,8 @@ void main()
                 pct(d[4], d[0] + d[1]), double(d[6]) / 120, pct(d[7], d[6]), double(d[8]) / 1024 / 120,
                 (unsigned long long)t.mismatches, (unsigned long long)sh.mismatches, (unsigned long long)t.raced);
         }
-        s_pipelineWaitLeftUs = s_pipelineWaitUs;
-        // A loading screen (or movie): wait for pipelines in full for 2 s.
-        if (s_stats.draws - s_drawsAtSwap < 64)
-            s_waitPipelinesUntil = frame + 120;
+        // A loading screen (or movie): a larger wait budget for 2 s.
+        s_pipelineWait.OnSwap(frame, s_stats.draws - s_drawsAtSwap);
         s_drawsAtSwap = s_stats.draws;
         if (s_pipelineSkips)
         {
