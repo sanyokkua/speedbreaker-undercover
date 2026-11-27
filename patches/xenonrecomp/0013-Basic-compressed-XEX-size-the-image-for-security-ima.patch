@@ -1,0 +1,36 @@
+From 3c6066a598a7f19b1de4597957c20da91615ebde Mon Sep 17 00:00:00 2001
+From: SpeedBreaker <noreply@localhost>
+Date: Thu, 26 Nov 2026 14:23:14 +0100
+Subject: [PATCH 13/13] Basic-compressed XEX: size the image for
+ security->imageSize (the blocks can end early; callers read the whole image)
+
+---
+ XenonUtils/xex.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/XenonUtils/xex.cpp b/XenonUtils/xex.cpp
+index 4e79042..1950f44 100644
+--- a/XenonUtils/xex.cpp
++++ b/XenonUtils/xex.cpp
+@@ -1,5 +1,6 @@
+ #include "xex.h"
+ #include "image.h"
++#include <algorithm>
+ #include <cassert>
+ #include <cstring>
+ #include <vector>
+@@ -180,6 +181,11 @@ Image Xex2LoadImage(const uint8_t* data, size_t dataSize)
+                 imageSize += blocks[i].dataSize + blocks[i].zeroSize;
+             }
+ 
++            // The blocks can end before the image does (its tail is zeros):
++            // size the buffer for the whole image, as callers read
++            // security->imageSize bytes. make_unique zero-fills it.
++            const size_t blocksSize = imageSize;
++            imageSize = std::max<size_t>(blocksSize, security->imageSize);
+             result = std::make_unique<uint8_t[]>(imageSize);
+             auto* destData = result.get();
+ 
+-- 
+2.56.1
+

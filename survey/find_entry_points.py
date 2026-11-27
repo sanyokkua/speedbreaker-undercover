@@ -14,7 +14,7 @@ exec(open('survey/classify_switches.py').read().split("tables = sorted")[0])
 # entries (they appear in the mapping too), so reruns give the same answer.
 CFG = G['config']
 _cfg = open(CFG).read()
-_configured = set(int(x, 16) for x in re.findall(r'0x([0-9A-F]+)', _cfg.split('secondary_entries = [')[1].split(']')[0])) \
+_configured = set(int(x, 16) for x in re.findall(r'(?m)^\s*0x([0-9A-F]+),', _cfg.split('secondary_entries = [')[1].split(']')[0])) \
     if 'secondary_entries = [' in _cfg else set()
 fnstarts = set(int(x, 16) for x in re.findall(r'\{ 0x([0-9A-F]+),', open(G['ppc'] + '/ppc_func_mapping.cpp').read())) - _configured
 labels = set()
@@ -49,6 +49,27 @@ for a in range(TEXT[0], TEXT[1], 4):
             break
         if (x >> 21) & 31 == rd and op not in (36, 37, 32, 33):  # rD overwritten
             break
+
+# Direct calls and tail calls (b, bl, bc; relative) from one function into the
+# middle of another: OotP's leaf at 0x825201C8 is reached only by `b` from 12
+# accessors, and leaf_switch_bounds.py starts its bounds at the 2-instruction
+# function before it (0x825201C0). Without an entry the call was dropped and
+# the caller returned with its out-struct unwritten.
+_fs = sorted(fnstarts)
+def _fn_of(a):
+    i = bisect.bisect_right(_fs, a) - 1
+    return _fs[i] if i >= 0 else None
+for a in range(TEXT[0], TEXT[1], 4):
+    w = word(a)
+    op = w >> 26
+    if op not in (16, 18) or w & 2:                    # b/bl or bc/bcl, relative only
+        continue
+    d = (w & 0x03FFFFFC) if op == 18 else (w & 0xFFFC)
+    sign = 0x02000000 if op == 18 else 0x8000
+    if d & sign: d -= sign * 2
+    t = a + d
+    if is_code(t) and t not in fnstarts and _fn_of(t) != _fn_of(a):
+        refs.setdefault(t, set()).add(('branch', a))
 
 def entry_like(v):
     p = word(v - 4)

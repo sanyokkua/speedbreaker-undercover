@@ -1,0 +1,59 @@
+From cfdf7275d5d10a4ebbe75a91691cf524fde308a3 Mon Sep 17 00:00:00 2001
+From: SpeedBreaker <noreply@localhost>
+Date: Thu, 26 Nov 2026 14:35:07 +0100
+Subject: [PATCH] Calls to an address that starts no function are fatal; remove
+ stale ppc_recomp.N.cpp
+
+- A b/bl/bc whose target is outside the function and is not a known
+  function start printed only "// ERROR <addr>" and returned: the call
+  was dropped. In HP: Order of the Phoenix a material accessor tail-calls
+  a leaf (0x825201C8) that the function list started 8 bytes early, so
+  the caller's out-struct stayed uninitialised and the game crashed on a
+  stale -1 pointer. Now a FATAL with the branch and target address.
+- After the last file, ppc_recomp.N.cpp files beyond the ones written
+  (left by an earlier run that wrote more of them) are deleted, so a
+  build that globs the output directory doesn't compile stale code.
+---
+ XenonRecomp/recompiler.cpp | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index 8a6f84c..1dd67dd 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -412,7 +412,12 @@ bool Recompiler::Recompile(
+                 }
+                 else
+                 {
++                    // A call or tail call (b/bl/bc) to an address that starts
++                    // no function: nothing can be emitted, and the caller
++                    // would return without running the callee. Fatal: give
++                    // the target a function (secondary_entries / functions).
+                     println("\t// ERROR {:X}", address);
++                    Fatal(fmt::format("branch at {:X} to {:X}, which is not a function start", base, address));
+                 }
+             }
+         };
+@@ -2830,6 +2835,19 @@ void Recompiler::Recompile(const std::filesystem::path& headerFilePath)
+     }
+ 
+     SaveCurrentOutData();
++
++    // Remove ppc_recomp.N.cpp files left by an earlier run that wrote more of
++    // them: a build that globs the directory would compile their stale code.
++    std::string directoryPath = config.directoryPath;
++    if (!directoryPath.empty())
++        directoryPath += "/";
++    for (size_t i = cppFileIndex;; i++)
++    {
++        std::string stale = fmt::format("{}{}/ppc_recomp.{}.cpp", directoryPath, config.outDirectoryPath, i);
++        if (std::remove(stale.c_str()) != 0)
++            break;
++        fmt::println("Removed stale {}", stale);
++    }
+ }
+ 
+ void Recompiler::SaveCurrentOutData(const std::string_view& name)
+-- 
+2.56.1
+

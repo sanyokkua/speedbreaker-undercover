@@ -1,0 +1,28 @@
+From 33aecde1f4c5f0bf8ebc44f8d3834d8d4fe1c33e Mon Sep 17 00:00:00 2001
+From: SpeedBreaker <noreply@localhost>
+Date: Thu, 26 Nov 2026 14:23:14 +0100
+Subject: [PATCH 12/13] invalid_instructions inside a function: no code, no
+ fatal (HP: Order of the Phoenix's 0x000000CC debug trap)
+
+---
+ XenonRecomp/recompiler.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index ce9e220..8a6f84c 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -2600,7 +2600,9 @@ bool Recompiler::Recompile(const Function& fn, uint32_t entry)
+         if (insn.opcode == nullptr)
+         {
+             println("\t// {}", insn.op_str);
+-            if (*data != 0)
++            // Words the config lists as invalid_instructions (debug-trap
++            // markers, padding) may sit inside a function too: no code.
++            if (*data != 0 && config.invalidInstructions.find(ByteSwap(*data)) == config.invalidInstructions.end())
+                 Fatal(fmt::format("unable to decode instruction {:X} at {:X}", ByteSwap(*data), base));
+         }
+         else
+-- 
+2.56.1
+
