@@ -19,6 +19,7 @@
 #include <span>
 
 #include "xdm.h"
+#include "wait_queue.h"
 
 namespace dispatcher
 {
@@ -48,10 +49,15 @@ struct Waitable : KernelObject
 {
     // Number of threads currently waiting on this object (for pulses).
     uint32_t waiters = 0;
+    // The waiting threads, oldest first: who a unit goes to (wait_queue.h).
+    WaitQueue queue;
 
     // Both are called with dispatcher::Lock() held, on the waiting thread.
     virtual bool IsSignaledLocked() const = 0;
     virtual void AcquireLocked() {}
+    // What a wait could take now, handed to the oldest waiters first; < 0:
+    // not handed out in order (everyone who sees it signalled may take it).
+    virtual int32_t UnitsLocked() const { return -1; }
 
     // KernelObject interface: millisecond timeout (INFINITE = forever).
     uint32_t Wait(uint32_t timeoutMs) override;
@@ -74,6 +80,8 @@ struct EventObject final : Waitable, HostObject<XKEVENT>
 
     bool IsSignaledLocked() const override { return signaled; }
     void AcquireLocked() override;
+    // A synchronization (auto-reset) event's signal goes to one waiter.
+    int32_t UnitsLocked() const override { return manualReset ? -1 : (signaled ? 1 : 0); }
 
     // Each returns the previous signal state.
     bool Set();
@@ -95,6 +103,7 @@ struct SemaphoreObject final : Waitable, HostObject<XKSEMAPHORE>
 
     bool IsSignaledLocked() const override { return count > 0; }
     void AcquireLocked() override;
+    int32_t UnitsLocked() const override { return count; }
     // Returns STATUS_SUCCESS or STATUS_SEMAPHORE_LIMIT_EXCEEDED.
     uint32_t Release(int32_t releaseCount, int32_t* previousCount);
 };

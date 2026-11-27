@@ -559,3 +559,8 @@ target_compile_options(vblank_lock_sim PRIVATE -O2 -UNDEBUG)
 # Frame Rate 30, Windows' late vblank wake-ups, and planted faults (about 40 s;
 # the 60 Hz tables, a minute and a half, by hand).
 add_test(NAME vblank_lock_sim_multiples COMMAND vblank_lock_sim --multiples)
+
+# The dispatcher hands a semaphore's or a synchronization event's signal to
+# the threads already waiting before a later one (kernel/wait_queue.h, header
+# only; Half-Blood Prince's render thread took its own release back).
+sb_test(dispatcher_fifo_test)

@@ -50,14 +50,36 @@ using namespace dispatcher;
 
 uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::optional<int64_t> deadline)
 {
+    static uint64_t s_tickets = 0;  // under Lock()
     std::unique_lock lock(Lock());
+    const uint64_t ticket = ++s_tickets;
     for (Waitable* o : objects)
+    {
         o->waiters++;
+        o->queue.Add(ticket, waitAll);
+    }
+    // Leaving the queue can make a younger waiter the one a unit goes to
+    // (this one timed out, or took another object): let them re-check.
     struct Leave
     {
         std::span<Waitable* const> objects;
-        ~Leave() { for (Waitable* o : objects) o->waiters--; }
-    } leave{ objects };
+        uint64_t ticket;
+        ~Leave()
+        {
+            bool others = false;
+            for (Waitable* o : objects)
+            {
+                o->waiters--;
+                o->queue.Remove(ticket);
+                others |= !o->queue.entries.empty();
+            }
+            if (others)
+                NotifyAllLocked();
+        }
+    } leave{ objects, ticket };
+    // Signalled, and this waiter's turn (wait_queue.h: the threads already
+    // waiting get a semaphore's count or an auto-reset event first).
+    auto mayTake = [&](Waitable* o) { return o->IsSignaledLocked() && o->queue.MayTake(ticket, waitAll, o->UnitsLocked()); };
 
     while (true)
     {
@@ -65,7 +87,7 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
         {
             bool all = true;
             for (Waitable* o : objects)
-                all &= o->IsSignaledLocked();
+                all &= mayTake(o);
             if (all)
             {
                 for (Waitable* o : objects)
@@ -77,7 +99,7 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
         {
             for (size_t i = 0; i < objects.size(); i++)
             {
-                if (objects[i]->IsSignaledLocked())
+                if (mayTake(objects[i]))
                 {
                     objects[i]->AcquireLocked();
                     return STATUS_WAIT_0 + uint32_t(i);
