@@ -143,7 +143,7 @@ sometimes free roam).
   (`[xconfig]` lines), so this changes nothing it reads today.
 - **Recompiler 0012-0014:** see "Recompiling".
 
-A full run with all of them on reached free roam with no crash; `ctest`: 98 tests,
+With all of them on (and the final recompile), a new game played through the intro and the prologue chase in 600 s with no crash and no `[glitch]`; an earlier build with the runtime fixes reached free roam; `ctest`: 98 tests,
 `swapchain_use_test` passes alone (it can fail in a parallel run, as before).
 
 ## Feature parity
