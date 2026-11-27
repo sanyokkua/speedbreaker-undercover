@@ -3,6 +3,29 @@
 What changed in each SpeedBreaker: Undercover build, newest first. The game shows the entry once,
 the first time a new version starts (offline: it's built into the game).
 
+## Unreleased
+
+Runtime and recompiler fixes found by the Harry Potter and the Order of the Phoenix port (same
+runtime), checked against Undercover one by one (docs/UNDERCOVER_SURVEY.md, "Fixes from the
+OotP port").
+
+- **Vertex data could be read half-rewritten** (the write watch opened a whole 16 KB host page
+  while another 4 KB guest page in it still had a GPU read pending). Undercover hit it in 407
+  frames of a 10-minute run; it caused no glitch seen there and does not explain the
+  single-frame object flicker. `NFSMW_GUARD_NEIGHBOURS=0` restores the old rule; diagnostics
+  `NFSMW_GUARD_RACE=1` and `NFSMW_GLITCH_WATCH=1`.
+- **Clears drawn as 4x MSAA rectangles reach the 1x layout of the same EDRAM** (the scene colour
+  and three depth targets in Undercover). `NFSMW_DRAW_CLEAR=0` turns it off.
+- **No light line along the top and left edges** of dark menus (the GPS map, fades) at internal
+  resolutions above 1x. `NFSMW_EDGE_SNAP=0` turns it off.
+- `ExGetXConfigSetting`: the AV-region answer no longer falls through into the user settings,
+  and the country is one byte.
+- Recompiler: XenonRecomp patches 0012-0014. A branch to an address that starts no function is
+  now an error instead of a silently dropped call. Undercover's 69 such branches were all in
+  code that never runs (functions decoded from the 8 data bytes before exception-handling
+  functions, which `survey/eh_data_ranges.py` now marks as data). Rebuild the tools to get the
+  patches: `rm -rf tools/XenonRecomp && scripts/setup_tools.sh`.
+
 ## v0.1.0
 
 ### What's new

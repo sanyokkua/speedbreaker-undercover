@@ -31,6 +31,33 @@ The build is `-DSB_GAME=undercover`. It defines `SB_GAME_CARBON`, `SB_GAME_PROST
   - `find_entry_points.py`: entry points right after a `bctr`, when data references them
     (vtable thunks that run into the next method).
   - `games.py`: by hand, 8 byte or halfword offset jump tables and 4 `b +4` stub bounds.
+- **Dropped branches (2026-11-27, patches 0012-0014 from the OotP port):** XenonRecomp turned a
+  branch to an address that starts no function into `// ERROR <addr>` and a `return`. Undercover
+  had 69 (39 targets, in 29 functions); with patch 0014 each is a FATAL. All 69 are in code that
+  never runs:
+  - 48 in 19 functions XenonRecomp starts 8 bytes before a `.pdata` function (the two C++ EH data
+    words in front of it decoded as code). Nothing calls them; the real function, 8 bytes later,
+    has the same branches as `goto`s.
+  - 18 in 7 SEH `__finally` handlers (`.rdata` scope entries `{begin, end, handler, 0}`, e.g.
+    `82D49140 82D49168 82D49150 0`): one or two instructions inside the parent with an entry of
+    their own, which the parent branches around, so the code after a handler looked like "the
+    middle of another function". They run only when SEH unwinds, and the runtime has no SEH
+    (`__C_specific_handler` and `RtlUnwind` are stubs, `RtlRaiseException` stops the game).
+  - 3 in pieces of a parent that only the 19 dead starts branch to.
+
+  None explains a known crash (the rare boot crash is in `sub_8275A5B0`'s resolve, the flicker
+  is not a crash).
+
+  Fix, the same as ProStreet's: `survey/eh_data_ranges.py` (from OotP) writes the 8 bytes before
+  each of the 89 exception-handling functions as `data_ranges`. That removes 118 bogus starts and
+  fragments (none referenced) and with them all 69 drops: 0 FATAL, 0 `ERROR` markers.
+  `find_entry_points.py` (OotP's, with direct branches into another function's middle) then keeps
+  23 SEH handlers callable that were function starts only through the bogus split: 32 entries
+  (9 before). A rerun of both gives the same config. Its reading of the configured list no longer
+  takes the `in .pdata fn 0x...` addresses in the comments for entries (they removed real
+  function starts from its list). Patches 0012 (an invalid word inside a function) and 0013
+  (basic-compressed XEX buffer) change nothing in Undercover's output (diffed: only the 69
+  markers differed). Recompiling takes 7 s.
 
 ## Booting
 
@@ -80,6 +107,44 @@ untiled rendering (`NFSMW_TILING=1`) and upscaling (`NFSMW_RESOLUTION=1x`); bin 
 (`SET_BIN_MASK`/`SET_BIN_SELECT`) drops only draws of masks the game never selects. Not reproduced
 with frame dumps (they slow the game). Suspected: the render thread and the render jobs (the
 boot crash's pair) building a frame's lists at once, which the console's scheduling prevents.
+Also ruled out (2026-11-27): the write watch's neighbour-page race (next section).
+
+## Fixes from the OotP port (2026-11-27)
+
+The Order of the Phoenix port (`hp5-ootp-x360-port`, a copy of this tree) fixed four runtime
+bugs and three recompiler ones. Each was checked against Undercover; all are in now. Runs: a
+throwaway `HOME`, the disc extracted fresh, a new game (`NFSMW_INPUT_SCRIPT="10-70/2:A,
+11-71/6:START,75-600/5:A,72~600:RT"`, 600 s at Frame Rate 60: the intro, the prologue chase,
+sometimes free roam).
+
+- **Write watch, neighbouring guest pages** (`kernel/write_watch.cpp`, OotP PORTING §8): a store
+  to one 4 KB guest page opened its whole 16 KB host page while another guest page in it still
+  had a GPU read pending; later stores to that page went unseen. Same script with
+  `NFSMW_GUARD_RACE=1 NFSMW_GLITCH_WATCH=1`: the old rule (`NFSMW_GUARD_NEIGHBOURS=0`) had 491
+  guest pages change while open (in 407 frames), the fix 126 (all texture untiles, which the
+  fix leaves to the snapshot compare; 80 neighbour waits, none gave up). Each run logged 6
+  `[glitch]` frames, the same scripted moments in both (scores 15.6/14.0, 107.5/104.4,
+  94.7/94.6, ...), none within 2 frames of a race; two runs without `NFSMW_GUARD_RACE` logged
+  none. So the race happens in Undercover but caused no glitch seen here, and does not explain
+  the object flicker (a small sign vanishing may stay under the 32x18 grid's threshold, so this
+  is not proof). Guard stalls stay 0.1-0.2 ms a frame.
+- **Drawn clears** (`gpu/draw_clear.h`, OotP §4): Undercover has the pattern. Logged once per
+  layout: the scene colour (base 0, pitch 640 at 4x MSAA, also clears pitch 1280 at 1x), depth at
+  bases 1312 and 1328 (same), and depth at base 1216 (pitch 520 at 4x and 1040 at 1x, both ways).
+  No visible difference found with it off (`NFSMW_DRAW_CLEAR=0`, new): the game draws over the
+  whole scene. Kept, as it gives the guest's EDRAM result; 0 glitches with it on and off.
+- **Edge snap** (`gpu/edge_snap.h`, OotP §9): at 2x a line along the top and left (light on
+  dark screens: the GPS map's row 0 mean 10.2 against 0.2 below it, column 0 21.7 against 1.0;
+  darker on the loading screen: 5.2 against 10.2). Frame dumps every 300 frames of a 320 s run:
+  6 of 35 show it with `NFSMW_EDGE_SNAP=0` (largest row/column 0-1 gap 21.1), 0 of 33 with the
+  fix (largest gap 1.3).
+- **`ExGetXConfigSetting`**: the AV-region case fell through into the user settings, and the
+  country is one byte. Undercover reads only category 3 (user) settings 0x0009 and 0x000A
+  (`[xconfig]` lines), so this changes nothing it reads today.
+- **Recompiler 0012-0014:** see "Recompiling".
+
+A full run with all of them on reached free roam with no crash; `ctest`: 98 tests,
+`swapchain_use_test` passes alone (it can fail in a parallel run, as before).
 
 ## Feature parity
 
