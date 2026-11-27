@@ -6,7 +6,8 @@
 // release). Half-Blood Prince's render thread released a semaphore the main
 // thread waited on and at once waited on it itself: taking its own release
 // back left the main thread waiting forever. A wait-all waiter doesn't hold
-// the others up. Header only.
+// the others up. A change wakes just the threads queued on that object (each
+// has its own WaitSignal). Header only.
 #include <kernel/wait_queue.h>
 
 #include <cstdio>
@@ -55,6 +56,28 @@ int main()
         CHECK(q.entries.size() == 2, "removing a ticket that isn't queued");
         q.Remove(1);
         CHECK(q.AheadOf(2) == 0, "ahead %u", q.AheadOf(2));
+    }
+    {
+        printf("a change wakes only the threads queued on that object\n");
+        // DH1 at 60 fps: one condition variable for every wait woke all ~20
+        // guest threads at each NtReleaseMutant.
+        WaitSignal a, b, c;
+        WaitQueue mutant, event;
+        mutant.Add(1, false, &a);
+        event.Add(2, false, &b);
+        event.Add(3, true, &c);   // a wait-all on the event and the mutant
+        mutant.Add(3, true, &c);
+        mutant.WakeLocked();
+        CHECK(a.wakes == 1 && c.wakes == 1, "the mutant's waiters: %llu %llu", (unsigned long long)a.wakes, (unsigned long long)c.wakes);
+        CHECK(b.wakes == 0, "the event's waiter was woken");
+        event.WakeLocked();
+        CHECK(b.wakes == 1 && c.wakes == 2 && a.wakes == 1, "the event's waiters");
+        mutant.Remove(1);
+        mutant.WakeLocked();
+        CHECK(a.wakes == 1, "a thread that left the queue was woken");
+        WaitQueue none;
+        none.Add(4, false);  // no signal (an older caller): nothing to wake
+        none.WakeLocked();
     }
     printf(g_failures ? "%d FAILED\n" : "ok\n", g_failures);
     return g_failures ? 1 : 0;

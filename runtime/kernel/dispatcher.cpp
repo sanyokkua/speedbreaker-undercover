@@ -11,10 +11,23 @@
 namespace dispatcher
 {
     static std::mutex s_lock;
-    static std::condition_variable s_cv;
+    // Every wait in progress (under s_lock): NotifyAllLocked's list.
+    static std::vector<WaitSignal*> s_waits;
+    static const bool s_wakeAll = [] { const char* v = std::getenv("NFSMW_WAKE_ALL"); return v && v[0] == '1'; }();
 
     std::mutex& Lock() { return s_lock; }
-    void NotifyAllLocked() { s_cv.notify_all(); }
+    void NotifyAllLocked()
+    {
+        for (WaitSignal* w : s_waits)
+            w->Wake();
+    }
+    void NotifyWaitersLocked(const Waitable& object)
+    {
+        if (s_wakeAll)
+            NotifyAllLocked();
+        else
+            object.queue.WakeLocked();
+    }
 
     int64_t GuestSystemTime()
     {
@@ -42,8 +55,6 @@ namespace dispatcher
             return std::nullopt;
         return guesttime::NowNs() + int64_t(ms) * 1'000'000;
     }
-
-    std::condition_variable& ConditionVariable() { return s_cv; }
 }
 
 using namespace dispatcher;
@@ -51,12 +62,14 @@ using namespace dispatcher;
 uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::optional<int64_t> deadline)
 {
     static uint64_t s_tickets = 0;  // under Lock()
+    WaitSignal signal;
     std::unique_lock lock(Lock());
     const uint64_t ticket = ++s_tickets;
+    s_waits.push_back(&signal);
     for (Waitable* o : objects)
     {
         o->waiters++;
-        o->queue.Add(ticket, waitAll);
+        o->queue.Add(ticket, waitAll, &signal);
     }
     // Leaving the queue can make a younger waiter the one a unit goes to
     // (this one timed out, or took another object): let them re-check.
@@ -64,19 +77,19 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
     {
         std::span<Waitable* const> objects;
         uint64_t ticket;
+        WaitSignal* signal;
         ~Leave()
         {
-            bool others = false;
+            std::erase(s_waits, signal);
             for (Waitable* o : objects)
             {
                 o->waiters--;
                 o->queue.Remove(ticket);
-                others |= !o->queue.entries.empty();
+                if (!o->queue.entries.empty())
+                    NotifyWaitersLocked(*o);
             }
-            if (others)
-                NotifyAllLocked();
         }
-    } leave{ objects, ticket };
+    } leave{ objects, ticket, &signal };
     // Signalled, and this waiter's turn (wait_queue.h: the threads already
     // waiting get a semaphore's count or an auto-reset event first).
     auto mayTake = [&](Waitable* o) { return o->IsSignaledLocked() && o->queue.MayTake(ticket, waitAll, o->UnitsLocked()); };
@@ -109,7 +122,7 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
 
         if (!deadline)
         {
-            ConditionVariable().wait(lock);
+            signal.cv.wait(lock);
             continue;
         }
         // Guest time stands still while the game is suspended, so no timeout
@@ -120,7 +133,7 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
         // so this thread is either waiting by then or reads false here.
         if (guesttime::Suspended())
         {
-            ConditionVariable().wait(lock);
+            signal.cv.wait(lock);
             continue;
         }
         int64_t left = *deadline - guesttime::NowNs();
@@ -128,7 +141,7 @@ uint32_t WaitForObjects(std::span<Waitable* const> objects, bool waitAll, std::o
             return STATUS_TIMEOUT;
         // A suspension that starts meanwhile is seen when this wakes at the
         // host deadline, with guest time still short of it.
-        ConditionVariable().wait_until(lock, Clock::now() + std::chrono::nanoseconds(left));
+        signal.cv.wait_until(lock, Clock::now() + std::chrono::nanoseconds(left));
     }
 }
 
@@ -172,7 +185,7 @@ bool EventObject::Set()
     signaled = true;
     pulseWakes = 0;
     MirrorLocked();
-    NotifyAllLocked();
+    NotifyWaitersLocked(*this);
     return previous;
 }
 
@@ -200,7 +213,7 @@ bool EventObject::Pulse()
     {
         signaled = true;
         pulseWakes = manualReset ? waiters : 1;
-        NotifyAllLocked();
+        NotifyWaitersLocked(*this);
     }
     MirrorLocked();
     return previous;
@@ -235,7 +248,7 @@ uint32_t SemaphoreObject::Release(int32_t releaseCount, int32_t* previousCount)
     count += releaseCount;
     if (guest != nullptr)
         guest->Header.SignalState = uint32_t(count);
-    NotifyAllLocked();
+    NotifyWaitersLocked(*this);
     return STATUS_SUCCESS;
 }
 
@@ -271,7 +284,7 @@ uint32_t MutantObject::Release(int32_t* previous)
     if (--recursion == 0)
     {
         owner = 0;
-        NotifyAllLocked();
+        NotifyWaitersLocked(*this);
     }
     return STATUS_SUCCESS;
 }
@@ -343,7 +356,7 @@ namespace
                 return;  // cancelled or re-armed since
             t->signaled = true;
             s_firings.fetch_add(1, std::memory_order_relaxed);
-            NotifyAllLocked();
+            NotifyWaitersLocked(*t);
             if (t->periodMs != 0)
             {
                 // From the last due time in guest time: a suspension adds no

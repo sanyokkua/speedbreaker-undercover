@@ -6,9 +6,11 @@
 // relative, absolute or infinite guest timeouts. Semantics follow Xenia's
 // XObject/XEvent/XSemaphore/XMutant/XTimer.
 //
-// All state changes and checks happen under one global lock; waiters sleep on
-// one condition variable and re-check after every state change. Simple and
-// correct first; revisit only if profiling shows contention.
+// All state changes and checks happen under one global lock. Each wait sleeps
+// on its own condition variable (wait_queue.h's WaitSignal): a change to an
+// object wakes the threads queued on it, NotifyAllLocked every wait (for
+// conditions outside an object's own state: a thread's exit, XNotify, the
+// resume). NFSMW_WAKE_ALL=1: every change wakes every wait (as before, A/B).
 //
 // Timeouts and timers run on guest time (guesttime::NowNs()), which stands
 // still while the game is suspended: a timed wait or a timer that would come
@@ -21,6 +23,8 @@
 #include "xdm.h"
 #include "wait_queue.h"
 
+struct Waitable;
+
 namespace dispatcher
 {
     using Clock = std::chrono::steady_clock;
@@ -28,6 +32,9 @@ namespace dispatcher
     std::mutex& Lock();
     // Wake every waiter to re-check. Call with Lock() held, after a change.
     void NotifyAllLocked();
+    // Wake the waiters queued on `object`. Call with Lock() held, after a
+    // change to it.
+    void NotifyWaitersLocked(const Waitable& object);
 
     // Guest time in 100 ns units since 1601 (KeQuerySystemTime's clock).
     int64_t GuestSystemTime();

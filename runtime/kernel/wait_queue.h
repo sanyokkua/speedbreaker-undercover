@@ -15,9 +15,28 @@
 // (NT takes nothing for it until all its objects are signalled, so it must
 // not hold up the others): it takes when all are signalled, and isn't
 // counted ahead of anyone. Header only; dispatcher::Lock() guards it.
+//
+// Each waiting thread also has its own WaitSignal, and a change to an object
+// wakes just the threads queued on it (WakeLocked). One condition variable for
+// every wait woke all ~20 guest threads at each release: DH1's main thread
+// spent ~45% of a 60 fps frame in NtReleaseMutant's broadcast and in the lock
+// the woken threads then fought over (docs/PORTING.md §11).
 #pragma once
+#include <condition_variable>
 #include <cstdint>
 #include <vector>
+
+struct WaitSignal
+{
+    std::condition_variable cv;  // waited on with dispatcher::Lock()
+    uint64_t wakes = 0;          // (for tests)
+
+    void Wake()
+    {
+        wakes++;
+        cv.notify_one();
+    }
+};
 
 struct WaitQueue
 {
@@ -25,10 +44,19 @@ struct WaitQueue
     {
         uint64_t ticket;
         bool waitAll;
+        WaitSignal* signal;
     };
     std::vector<Entry> entries;  // in ticket order (tickets only grow)
 
-    void Add(uint64_t ticket, bool waitAll) { entries.push_back({ ticket, waitAll }); }
+    void Add(uint64_t ticket, bool waitAll, WaitSignal* signal = nullptr) { entries.push_back({ ticket, waitAll, signal }); }
+
+    // The object changed: every thread queued on it re-checks.
+    void WakeLocked() const
+    {
+        for (const Entry& e : entries)
+            if (e.signal != nullptr)
+                e.signal->Wake();
+    }
 
     void Remove(uint64_t ticket)
     {
