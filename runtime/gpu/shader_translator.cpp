@@ -97,6 +97,8 @@ layout(push_constant) uniform DrawConstants
     vec4 posScale;        // NDC = pos.xy * posScale.xy + posScale.zw * pos.w
     uvec4 vfRedirect[4];  // guest start, size, ring byte offset: vertex data snapshots
     uint constRing;       // ring byte offset of this draw's XenosConstants, see constRel()
+    float edgeSnapX;      // half a guest pixel in NDC per axis (0: off), see the position epilogue
+    float edgeSnapY;      // (two floats: a vec2 would be aligned to 8 bytes, past the C++ struct's 116)
 } pc;
 
 // Textures: set 1, one binding per fetch slot the shader uses (declared after
@@ -1387,6 +1389,16 @@ void main()
         // Guest viewport transform folded into the shader: guest clip space
         // -> render target pixels -> host NDC over the whole target.
         pos.xy = pos.xy * pc.posScale.xy + pc.posScale.zw * pos.w;
+        // Scaled rendering with Direct3D 9 pixel centres (gpu/edge_snap.h):
+        // a screen-space vertex (w 1) on the target's left or top edge in
+        // guest pixels (D3D x/y 0, NDC -1 + half a pixel) moves onto the
+        // target's edge (D3D -0.5), as the guest's 1x rasteriser covers
+        // that column/row in full; else the host pixels left of the guest
+        // pixel's centre stay undrawn (a line along the top and left).
+        if (pc.edgeSnapX > 0.0 && abs(pos.w - 1.0) < 1e-5 && abs(pos.x + 1.0 - pc.edgeSnapX) < pc.edgeSnapX * 0.125)
+            pos.x = -1.0;
+        if (pc.edgeSnapY > 0.0 && abs(pos.w - 1.0) < 1e-5 && abs(pos.y + 1.0 - pc.edgeSnapY) < pc.edgeSnapY * 0.125)
+            pos.y = -1.0;
     }
     gl_Position = pos;
     gl_PointSize = 1.0;

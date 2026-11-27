@@ -72,6 +72,10 @@ sb_test(render_scale_test ARGS ${RT}/gpu/renderer.cpp)
 # only): each cut to its own rows at 1x, 1.5x, 2x, 3x and Vert+'s taller y
 # scales, meeting exactly; renderer.cpp is read to check it applies the rules.
 sb_test(split_views_test ARGS ${RT}/gpu/renderer.cpp)
+# Clears drawn as rectangles reach every layout of their EDRAM (gpu/draw_clear.h,
+# header only): Order of the Phoenix's 4x half-pitch scene clear; renderer.cpp is
+# read to check Draw applies it.
+sb_test(draw_clear_test ARGS ${RT}/gpu/renderer.cpp)
 # Which controller is which player in split screen (hid/player_slots.h,
 # header only) and the game's split-screen test (game/split_screen.h);
 # input.cpp is read to check users 1-3 follow it.
@@ -86,6 +90,10 @@ endif()
 # screen's backdrop and what fills the screen round them (gpu/edge_bars.h,
 # header only).
 sb_test(edge_bars_test)
+# Full-screen quads from Direct3D 9 x/y 0 cover the first host column and row
+# at scaled resolutions (gpu/edge_snap.h, header only; OotP's line along the
+# top and left of black screens); the shader and renderer are read.
+sb_test(edge_snap_test ARGS ${RT}/gpu/shader_translator.cpp ${RT}/gpu/renderer.cpp)
 # GitHub #19's menu borders (gpu/edge_bars.h, header only): the Showcase's
 # vignette stretched to the screen's edges, the Blacklist bio's black panel
 # filled all round, at every screen shape; renderer.cpp is read to check it

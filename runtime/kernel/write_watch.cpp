@@ -68,6 +68,17 @@ namespace writewatch
         std::unique_ptr<std::atomic<const char*>[]> s_gpuTag;
         std::unique_ptr<std::atomic<uint32_t>[]> s_gpuRange[2];
         std::atomic<uint64_t> s_stalls{ 0 }, s_stallUs{ 0 }, s_faults{ 0 }, s_opened{ 0 };
+        // NFSMW_GUARD_RACE=1 (a diagnostic): when a host page is opened for
+        // the CPU while another of its guest pages still has a GPU read
+        // pending (s_rearm: a fault on a neighbour, a host write), that guest
+        // page's bytes are hashed, and again at the Rearm that protects it:
+        // a change is a CPU store the guard never saw, logged as [guard-race]
+        // ("while pending": the read was still pending at the Rearm, so the
+        // GPU may read the new bytes). Under s_protectMutex.
+        const bool s_raceCheck = [] { const char* v = std::getenv("NFSMW_GUARD_RACE"); return v && v[0] == '1'; }();
+        struct OpenHazard { uint32_t sub; uint64_t use, hash; const char* why; uint32_t at; };
+        std::vector<OpenHazard> s_openHazards;
+        std::atomic<uint64_t> s_raceOpened{ 0 }, s_raceChanged{ 0 }, s_racePending{ 0 };
         // Shadow mode (a renderer that can't import guest memory, e.g. on a
         // discrete GPU): the GPU reads and writes its own copy of physical
         // memory. Per host page: the write sequence the copy was made at
@@ -369,6 +380,31 @@ namespace writewatch
         uint8_t* GuestPage(uint32_t page)
         {
             return g_memory.base + kWindows[0] + (uint64_t(page) << s_pageShift);
+        }
+
+        // NFSMW_GUARD_RACE: a guest page's bytes, hashed.
+        uint64_t HashSub(uint32_t sub)
+        {
+            const uint64_t* w = reinterpret_cast<const uint64_t*>(g_memory.base + kWindows[0] + (uint64_t(sub) << kSubShift));
+            uint64_t h = 0xcbf29ce484222325ull;
+            for (size_t i = 0; i < (size_t(1) << kSubShift) / 8; i++)
+                h = (h ^ w[i]) * 0x100000001b3ull;
+            return h;
+        }
+
+        // NFSMW_GUARD_RACE, under s_protectMutex: host page `page` is being
+        // opened with GPU reads pending on some of its guest pages.
+        void NoteOpenHazards(uint32_t page, const char* why, uint32_t at)
+        {
+            if (!s_raceCheck)
+                return;
+            const uint64_t completed = s_completed.load();
+            for (uint32_t i = 0, sub = page * s_subsPerPage; i < s_subsPerPage; i++, sub++)
+                if (const uint64_t use = s_gpuRead[sub].load(); use > completed && s_openHazards.size() < 4096)
+                {
+                    s_openHazards.push_back({ sub, use, HashSub(sub), why, at });
+                    s_raceOpened++;
+                }
         }
 
         // Under s_protectMutex: close host page `page`'s snapshot (see
@@ -728,7 +764,10 @@ namespace writewatch
         // above a frame of GPU latency: below it, each give-up would reload
         // the texture and the next store would wait again, every frame.
         constexpr auto kUntileWait = std::chrono::milliseconds(100);
-        bool WaitForGpu(uint32_t sub, bool write, bool untile = false)
+        // `bounded`: as an untile wait (gives up after kUntileWait), for the
+        // GPU's use of a guest page next to the one stored to (see
+        // WaitForNeighbours).
+        bool WaitForGpu(uint32_t sub, bool write, bool untile = false, bool bounded = false)
         {
             uint64_t use = untile ? s_gpuUntile[sub].load() : Hazard(sub, write);
             if (use <= s_completed.load() || t_gpuThread)
@@ -737,7 +776,7 @@ namespace writewatch
             bool done = true;
             while (s_completed.load() < use)
             {
-                if (untile && std::chrono::steady_clock::now() - start > kUntileWait)
+                if ((untile || bounded) && std::chrono::steady_clock::now() - start > kUntileWait)
                 {
                     done = false;
                     break;
@@ -769,6 +808,60 @@ namespace writewatch
                         s_gpuRange[1][sub].load(), (unsigned long long)use, done ? "" : ", gave up", dl.dli_sname ? dl.dli_sname : "?");
             }
             return done;
+        }
+
+        // A CPU store opens the whole host page (16 KB on Apple: four guest
+        // pages) until the next Rearm, and the guest's later stores to its
+        // other guest pages go unseen: one the GPU still reads (vertex data
+        // of a draw recorded but not yet run, while the guest, its fence
+        // already published, reuses the memory) would be read half new.
+        // OotP at 60 fps: a skinned character's vertices exploded into
+        // streaks for one frame every few minutes. So before opening for a
+        // store, wait for the GPU's use of the host page's other guest pages
+        // too. Bounded (kUntileWait) as an untile wait: the storing thread
+        // may hold what the command processor needs before it submits; a
+        // wait that gives up opens the page as before. NFSMW_GUARD_NEIGHBOURS=0:
+        // off (the old behaviour, an A/B switch).
+        const bool s_waitNeighbours = [] { const char* v = std::getenv("NFSMW_GUARD_NEIGHBOURS"); return !v || v[0] != '0'; }();
+        std::atomic<uint64_t> s_neighbourWaits{ 0 }, s_neighbourGaveUp{ 0 };
+        // A GPU read pending on guest page `sub` other than a texture's
+        // untile (those are waited for and compared by the snapshot, see
+        // OpenSnapshot); GPU writes keep their rule (the page is opened for
+        // the store).
+        bool NeighbourReadPending(uint32_t sub)
+        {
+            const uint64_t read = s_gpuRead[sub].load();
+            return read > s_completed.load() && s_gpuUntile[sub].load() != read;
+        }
+        // Under s_protectMutex, for HandleFault: still one to wait for (the
+        // command processor guarded it after WaitForNeighbours)?
+        bool NeighbourWaitLeft(uint32_t page, uint32_t except)
+        {
+            if (!s_waitNeighbours || t_gpuThread || s_shadow)
+                return false;
+            for (uint32_t i = 0, sub = page * s_subsPerPage; i < s_subsPerPage; i++, sub++)
+                if (sub != except && NeighbourReadPending(sub))
+                    return true;
+            return false;
+        }
+        bool WaitForNeighbours(uint32_t page, uint32_t except)
+        {
+            if (!s_waitNeighbours || t_gpuThread || s_shadow)
+                return true;
+            for (uint32_t i = 0, sub = page * s_subsPerPage; i < s_subsPerPage; i++, sub++)
+            {
+                if (sub == except || !NeighbourReadPending(sub))
+                    continue;
+                {
+                    s_neighbourWaits.fetch_add(1, std::memory_order_relaxed);
+                    if (!WaitForGpu(sub, true, false, true))
+                    {
+                        s_neighbourGaveUp.fetch_add(1, std::memory_order_relaxed);
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
 
         void Guard(uint32_t physical, uint32_t size, uint64_t submission, bool write, const char* tag, bool untile = false)
@@ -875,6 +968,10 @@ namespace writewatch
             s_gpuRange[0].reset(new std::atomic<uint32_t>[kSubCount]);
             s_gpuRange[1].reset(new std::atomic<uint32_t>[kSubCount]);
         }
+        // Untiles told apart from other GPU reads (OpenSnapshot, WaitForNeighbours).
+        s_gpuUntile.reset(new std::atomic<uint64_t>[kSubCount]);
+        for (uint32_t i = 0; i < kSubCount; i++)
+            s_gpuUntile[i].store(0, std::memory_order_relaxed);
         // NFSMW_WATCH_SUBPAGES: a pending mask holds a host page's guest
         // pages, a bit each. The copies are touched now, not first in the
         // fault handler.
@@ -887,9 +984,6 @@ namespace writewatch
             s_blockSnaps.reset(new std::atomic<uint16_t>[kPhysicalSize >> kBlockShift]);
             for (uint32_t i = 0; i < (kPhysicalSize >> kBlockShift); i++)
                 s_blockSnaps[i].store(0, std::memory_order_relaxed);
-            s_gpuUntile.reset(new std::atomic<uint64_t>[kSubCount]);
-            for (uint32_t i = 0; i < kSubCount; i++)
-                s_gpuUntile[i].store(0, std::memory_order_relaxed);
             for (uint32_t i = 0; i < kSnapSlots; i++)
                 s_snapFree[i] = kSnapSlots - 1 - i;
             s_snapFreeCount = kSnapSlots;
@@ -997,6 +1091,10 @@ namespace writewatch
         s_hostWriteBytes += size;
         for (int64_t sub = start >> kSubShift; sub <= end >> kSubShift; sub++)
             WaitForGpu(uint32_t(sub), true);
+        // The pages are opened whole: the GPU's use of their other guest
+        // pages too (see WaitForNeighbours).
+        for (int64_t page = start >> s_pageShift; page <= end >> s_pageShift; page++)
+            WaitForNeighbours(uint32_t(page), UINT32_MAX);
         std::lock_guard lock(s_protectMutex);
         ProtectRun run;
         for (int64_t page = start >> s_pageShift; page <= end >> s_pageShift; page++)
@@ -1011,7 +1109,11 @@ namespace writewatch
             // The kernel can't fault: open the page whatever else it holds.
             SetProt(uint32_t(page), 0, &run);
             if (WantedProt(uint32_t(page)) != 0)
+            {
+                run.Flush();  // (readable now)
+                NoteOpenHazards(uint32_t(page), "a host write", uint32_t(start));
                 s_rearm.push_back(uint32_t(page));
+            }
         }
     }
 
@@ -1032,12 +1134,21 @@ namespace writewatch
         // is done with this guest page. The command processor may guard it
         // again while we wait: check under the lock.
         bool markUntiles = false;  // a wait for another guest page's untile gave up
+        // Wait for the GPU's reads of the host page's other guest pages (see
+        // WaitForNeighbours) until one gives up, or 4 rounds (the command
+        // processor keeps guarding them for newer draws: open as before).
+        bool neighbours = write;
+        uint32_t neighbourRounds = 0;
         while (true)
         {
             WaitForGpu(sub, write);
+            if (neighbours && (++neighbourRounds > 4 || !WaitForNeighbours(page, sub)))
+                neighbours = false;
             std::unique_lock lock(s_protectMutex);
             if (!t_gpuThread && Hazard(sub, write) > s_completed.load())
                 continue;
+            if (neighbours && NeighbourWaitLeft(page, sub))
+                continue;  // (guarded meanwhile: wait again, until a wait gives up)
             if (t_gpuThread)
             {
                 // Never waits (GPU threads store through GpuThreadStore; this
@@ -1094,6 +1205,7 @@ namespace writewatch
             // Another guest page of this host page still has a GPU hazard:
             // open it for this access and protect it again soon.
             SetProt(page, allowed);
+            NoteOpenHazards(page, write ? "a write fault" : "a read fault", uint32_t(physical));  // (readable now)
             s_rearm.push_back(page);
             s_opened++;
             return true;
@@ -1111,6 +1223,30 @@ namespace writewatch
             for (const Snap& snap : s_snap)
                 if (snap.page != UINT32_MAX && s_rearms - snap.opened > kSnapAge)
                     CloseSnapshot(snap.page, false);
+        if (!s_openHazards.empty())
+        {
+            const uint64_t completed = s_completed.load();
+            for (const OpenHazard& o : s_openHazards)
+                if (s_prot[o.sub / s_subsPerPage].load() != 2 && HashSub(o.sub) != o.hash)  // (PROT_NONE: unreadable, skipped)
+                {
+                    s_raceChanged++;
+                    const bool pending = o.use > completed;
+                    if (pending)
+                        s_racePending++;
+                    static uint32_t logged = 0;
+                    if (logged++ < 2000)
+                        fprintf(stderr, "[guard-race] frame %llu: guest page %08X written while open (opened by %s at %08X) with a GPU read "
+                            "of submission %llu %s (completed %llu)%s%s\n", (unsigned long long)s_writerFrame.load(std::memory_order_relaxed),
+                            o.sub << kSubShift, o.why, o.at, (unsigned long long)o.use, pending ? "still pending" : "done by now",
+                            (unsigned long long)completed, s_gpuTag ? ": " : "", s_gpuTag ? s_gpuTag[o.sub].load() : "");
+                }
+            s_openHazards.clear();
+        }
+        if (s_raceCheck && s_rearms % 6000 == 0)
+            fprintf(stderr, "[guard-race] so far: %llu guest pages with a GPU read pending opened for the CPU, %llu changed while open "
+                "(%llu with the read still pending); %llu waits for a neighbour guest page (%llu gave up)\n", (unsigned long long)s_raceOpened.load(),
+                (unsigned long long)s_raceChanged.load(), (unsigned long long)s_racePending.load(),
+                (unsigned long long)s_neighbourWaits.load(), (unsigned long long)s_neighbourGaveUp.load());
         if (s_rearm.empty())
             return;
         std::sort(s_rearm.begin(), s_rearm.end());

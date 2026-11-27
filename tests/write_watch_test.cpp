@@ -351,9 +351,10 @@ static void Unwatched(Quad h, uint64_t& submission)
 // changes and then restores (dcbz and a copy, a clear and a redraw), which
 // no compare can see. A texture's untile is waited for first: the store
 // returns once it is done, and the texture's page is compared as any other.
-// Another GPU read (vertex data) leaves its page marked at the fault, as the
-// whole host page would be; with one on every other guest page, nothing is
-// left to compare: the whole page.
+// Another GPU read (vertex data) is waited for too (WaitForNeighbours): the
+// guest's later stores to that page would go unseen while the GPU still
+// reads it (OotP's exploding skinned meshes); after the wait the page is
+// compared as any other, and with one on every other guest page as well.
 static void AbaWhileGpuReads(Quad h, uint64_t& submission)
 {
     printf("ABA while a GPU read is in flight\n");
@@ -395,17 +396,20 @@ static void AbaWhileGpuReads(Quad h, uint64_t& submission)
     before = Stats();
     Store(h.j(), 14);
     auto opened = Stats();
-    flip();
-    CHECK(writewatch::WrittenSince(h.k(), kGuestPage, q), "the texture changed under its GPU read and isn't marked: it keeps what the GPU read");
+    if (shared)
+        CHECK(Completed() >= submission, "the store didn't wait for the GPU read of the guest page beside it");
+    flip();  // (after the GPU read: what it read stays right)
+    CHECK(writewatch::WrittenSince(h.k(), kGuestPage, q) == (shared && !s_subpages), "texture written since: %d, want %d", int(s_subpages),
+        int(shared && !s_subpages));
     CHECK(writewatch::WrittenSince(h.l(), kGuestPage, ql) == (shared && !s_subpages), "a neighbour without a GPU read marked");
+    CHECK(opened.opened == before.opened, "the page was opened with a GPU read left on another guest page");
     if (s_subpages)
     {
-        CHECK(opened.snapOpened == before.snapOpened + 1, "%llu snapshots opened, want 1 (for the guest pages without a GPU read)",
+        CHECK(opened.snapOpened == before.snapOpened + 1, "%llu snapshots opened, want 1 (after the GPU read)",
             (unsigned long long)(opened.snapOpened - before.snapOpened));
-        CHECK(opened.snapReading == before.snapReading + 1, "%llu guest pages marked for a GPU read, want 1",
+        CHECK(opened.snapReading == before.snapReading, "%llu guest pages marked for a GPU read, want 0 (it was waited for)",
             (unsigned long long)(opened.snapReading - before.snapReading));
-        CHECK(opened.snapWaits == before.snapWaits, "a store waited for a GPU read that isn't an untile");
-        CHECK(opened.opened == before.opened + 1, "the page wasn't opened with its GPU hazard left (for a rearm)");
+        CHECK(opened.snapWaits == before.snapWaits, "a GPU read that isn't an untile counted as an untile wait");
     }
     Complete(submission);
     writewatch::Rearm();
@@ -421,14 +425,14 @@ static void AbaWhileGpuReads(Quad h, uint64_t& submission)
         auto after = Stats();
         if (s_subpages)
         {
-            CHECK(after.snapWhole == before.snapWhole + !untiles, "%llu whole-page fallbacks, want %d (%s)",
-                (unsigned long long)(after.snapWhole - before.snapWhole), int(!untiles), untiles ? "untiles" : "no guest page left to compare");
-            CHECK(after.snapOpened == before.snapOpened + untiles, "%llu snapshots opened, want %d", (unsigned long long)(after.snapOpened - before.snapOpened),
-                int(untiles));
+            // Untiles and other GPU reads alike are waited for, then compared.
+            CHECK(after.snapWhole == before.snapWhole, "%llu whole-page fallbacks, want 0 (%s)",
+                (unsigned long long)(after.snapWhole - before.snapWhole), untiles ? "untiles" : "GPU reads");
+            CHECK(after.snapOpened == before.snapOpened + 1, "%llu snapshots opened, want 1", (unsigned long long)(after.snapOpened - before.snapOpened));
         }
         CHECK(writewatch::WrittenSince(h.j(), kGuestPage, qj), "the faulting guest page isn't marked");
-        CHECK(writewatch::WrittenSince(h.k(), 3 * kGuestPage, q) == (shared && !(s_subpages && untiles)), "the textures beside it written since: want %d",
-            int(shared && !(s_subpages && untiles)));
+        CHECK(writewatch::WrittenSince(h.k(), 3 * kGuestPage, q) == (shared && !s_subpages), "the textures beside it written since: want %d",
+            int(shared && !s_subpages));
         Complete(submission);
         writewatch::Rearm();
     }
@@ -657,10 +661,11 @@ static void UntileAndGpuWrite(Quad h, uint64_t& submission)
     }
 }
 
-// 15) An untile is waited for only while it is its guest page's newest GPU
-// read. Behind a later one (vertex data in the texture's last page), the
-// page would be marked after the wait anyway: it is marked at once. In the
-// same submission, the wait completes both and the page is compared.
+// 15) An untile is waited for as such only while it is its guest page's
+// newest GPU read. Behind a later one (vertex data in the texture's last
+// page), the store waits for that read instead (WaitForNeighbours), which
+// completes the untile too, and the page is compared. In the same
+// submission, the untile wait completes both and the page is compared.
 static void UntileBehindRead(Quad h, uint64_t& submission)
 {
     printf("untile behind a later GPU read\n");
@@ -676,17 +681,16 @@ static void UntileBehindRead(Quad h, uint64_t& submission)
         auto before = Stats();
         Store(h.j(), 27);
         auto after = Stats();
-        bool marked = shared && (later || !s_subpages);
+        bool marked = shared && !s_subpages;
         CHECK(writewatch::WrittenSince(h.k(), kGuestPage, q) == marked, "texture written since: %d, want %d (read %s)", int(!marked), int(marked),
             later ? "later" : "in the same submission");
         if (s_subpages)
         {
-            CHECK((Completed() >= untile) == !later, "the store %s for the untile (read %s)", later ? "waited" : "didn't wait",
-                later ? "later" : "in the same submission");
+            CHECK(Completed() >= submission, "the store didn't wait for the GPU reads (read %s)", later ? "later" : "in the same submission");
             CHECK(after.snapWaits == before.snapWaits + !later, "%llu untile waits, want %d", (unsigned long long)(after.snapWaits - before.snapWaits),
                 int(!later));
-            CHECK(after.snapReading == before.snapReading + later, "%llu guest pages marked for a GPU read, want %d",
-                (unsigned long long)(after.snapReading - before.snapReading), int(later));
+            CHECK(after.snapReading == before.snapReading, "%llu guest pages marked for a GPU read, want 0",
+                (unsigned long long)(after.snapReading - before.snapReading));
             CHECK(after.snapOpened == before.snapOpened + 1, "%llu snapshots opened, want 1", (unsigned long long)(after.snapOpened - before.snapOpened));
         }
         Complete(submission);
