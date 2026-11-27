@@ -255,11 +255,19 @@ uint32_t ObReferenceObjectByHandle(uint32_t handle, uint32_t objectType, be<uint
     return 0;
 }
 
-uint32_t NtSuspendThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
+// SpeedBreaker: NtSuspendThread and NtResumeThread write the previous suspend
+// count (the runtime keeps one level: 1 if the thread was suspended, else 0).
+// XAPI's ResumeThread returns it, and -1 means failure: Deathly Hallows - Part 1
+// read whatever its stack held (-1 at times), closed the sound engine's worker
+// thread as "not resumed", Wwise's init failed and a loader thread used its
+// freed singleton (a bus error at guest 0x4C, 1.8 s into the session).
+uint32_t NtSuspendThread(GuestThreadHandle* hThread, be<uint32_t>* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE) && hThread->GetThreadId() == GuestThread::GetCurrentThreadId());
 
-    hThread->suspended = true;
+    const bool was = hThread->suspended.exchange(true);
+    if (suspendCount)
+        *suspendCount = was ? 1u : 0u;
     hThread->suspended.wait(true);
 
     return S_OK;
@@ -470,11 +478,13 @@ uint32_t RtlMultiByteToUnicodeN(be<uint16_t>* UnicodeString, uint32_t MaxBytesIn
     return STATUS_SUCCESS;
 }
 
-uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
+uint32_t NtResumeThread(GuestThreadHandle* hThread, be<uint32_t>* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE));
 
-    hThread->suspended = false;
+    const bool was = hThread->suspended.exchange(false);
+    if (suspendCount)
+        *suspendCount = was ? 1u : 0u;
     hThread->suspended.notify_all();
 
     return S_OK;
