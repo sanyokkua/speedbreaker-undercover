@@ -178,6 +178,44 @@ three builds; the 32x18 grid can't see a small sign vanish, so this is no proof 
 
 `ctest -j3`: 103 of 103 passed.
 
+## Fixes from the Deathly Hallows - Part 1 port (2026-11-28, v0.1.2)
+
+The Deathly Hallows - Part 1 port (`hp7-dh-part1-x360-port`, from the HBP tree) found a
+recompiler bug and more general runtime bugs. Runs: 365 s each, a throwaway `HOME`, the disc
+extracted fresh, a new game (the OotP-round script: the intro, the prologue chase, free roam),
+`NFSMW_GLITCH_WATCH=1`, on a machine shared with another agent's builds (load average 8-12).
+A: the v0.1.1 build (648782a, recompiled with 0001-0014); B: the fixes. Both: no crash or hang,
+movies, the chase and free roam look the same in shots (the two runs drift a few seconds apart);
+`[glitch]` frames A 5, B 10 (scores 4.5-36.7, at movie cuts and fades). Chase and free roam
+(170-365 s): A 53.8 fps mean (44 of 86 `[perf]` lines at 60), B 54.0 (46 of 85). Audio: 1,023,663
+and 878,887 XMA frames decoded.
+
+| Fix | Undercover evidence | Taken |
+|---|---|---|
+| XenonRecomp 0019: `bdzlr`/`bdnzlr` don't end a function | One function changed: the CRT `memset` `sub_82D33280` (no `.pdata`, 2269 call sites) ended at its first `bdzlr`, leaving the last 1-2 bytes unset for lengths 2 or 3 bytes past a word. Its two tail fragments `sub_82D33310`/`sub_82D33318` are gone (nothing referenced them); 0 FATAL, 0 `// ERROR` | yes |
+| `NtSuspendThread`/`NtResumeThread` write the previous suspend count | general kernel bug; boots and plays as before | yes (`KeInitializeDpc`: not imported) |
+| XNotify listeners are waitable; a non-waitable wait is logged once | no `[kernel] wait on handle` line | yes |
+| `MmQueryStatistics` leaves the runtime's heap out | its one caller is XAPI's `GlobalMemoryStatus`; Undercover runs with the old count | no (would change memory sizing for no seen bug) |
+| `XamContentGetCreator`/`GetDeviceState` complete their XOVERLAPPED | new game, autosaves and play as before | yes |
+| Bounded pipeline waits after a loading screen | the chase's first frames on a fresh cache: draws skipped while compiling, as before | yes |
+| XMA through XAudio's registers | 0 register kicks, locks or clears in 365 s with it built in | no (not needed) |
+| tfetch filter overrides | 0 fetch constants changed (temporary counter, run B) | yes (latent) |
+| Front buffer at the scaler's shape | `display scaler: source 1280x720, output 1280x720 (front buffer 1280x720)` | yes (no effect) |
+| Pixel parameter generation | 0 draws set it in run B (temporary counter) | yes (latent) |
+| Pipeline warm-up, pipeline cache on its own thread | first run: `0 KB loaded (0.0 s, in the background)` | yes |
+| Dispatcher: one condition variable per wait | frame rate as before (GPU-bound) | yes, `NFSMW_WAKE_ALL=1` for the broadcast |
+| Repeated resolves, whole-cover resolves | 0 repeats; 88 scaled slots a frame not filled (written whole), 14 stores a frame into textures written whole | yes |
+| Occlusion: a provisional END report | in | yes, `NFSMW_OCCLUSION_PROVISIONAL=0` |
+| `draw_clear`: depth-only clears with alpha test on | 0 such clears in run B | yes (latent) |
+
+Not taken: DH1's own hooks, keyboard layout, `XGetGameRegion`, frame-rate and cutscene hooks,
+XenonRecomp 0015-0018 and 0020. The single-frame flicker is still open (not looked at here).
+The pipeline warm-up commit moved Carbon's HDR grade check into `NewShader` (`MarkHdrGradeShader`).
+
+`ctest -j3`: 113 tests, 111 passed; `game_identity_test` and `game_identity_carbon_test` pass on a
+clean export of the commit (they fail in this checkout only because of uncommitted deletions under
+`scripts/ios/`). `tests/run_instr_tests.sh`: 0 failed.
+
 ## Feature parity
 
 Found by matching ProStreet's code:
