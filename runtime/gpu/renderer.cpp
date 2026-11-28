@@ -25,6 +25,8 @@
 #include "depth_only.h"
 #include "draw_clear.h"
 #include "render_scale.h"
+#include "resolve_cover.h"
+#include "resolve_repeat.h"
 #include "shared_memory_glsl.h"
 #include "shadow_lend.h"
 #include "split_views.h"
@@ -818,6 +820,20 @@ namespace gpu::renderer
         VkCommandBuffer s_cmd = VK_NULL_HANDLE;
         bool s_recording = false;
         std::chrono::steady_clock::time_point s_recordStart;
+        // NFSMW_PASS_PROFILE: GPU work between passes, each timed from the
+        // previous mark or pass end to its own (a timestamp after its
+        // barrier), printed before the pass it precedes.
+        struct GapMark { std::string desc; uint32_t query; size_t pass; };
+        std::vector<GapMark> s_gapMarks;
+        void ProfileMark(std::string desc)
+        {
+            if (!s_profiling || s_passQueryNext + 1 > 512 || !s_cmd)
+                return;
+            vkCmdResetQueryPool(s_cmd, s_passQueries, s_passQueryNext, 1);
+            vkCmdWriteTimestamp(s_cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_passQueries, s_passQueryNext);
+            s_gapMarks.push_back({ std::move(desc), s_passQueryNext, s_passInfos.size() });
+            s_passQueryNext++;
+        }
         std::mutex s_submitMutex;
         std::condition_variable s_submitCv;
         std::deque<uint32_t> s_inFlight;
@@ -882,6 +898,9 @@ namespace gpu::renderer
         // memory is read (a texture load), before a texture's own image is
         // written (whole: all of it).
         struct RenderTarget;
+        // Moves on every write to a target's image (a pass, a clear, a
+        // copy or blit into one): gpu/resolve_repeat.h.
+        uint64_t s_targetEpoch = 1;
         void LendTargetWrite(RenderTarget* rt, bool whole);
         void LendGuestRead(uint32_t base, uint32_t size);
         // NFSMW_SHADOW_EXP bitmask (measurement only, v020 shadows-mobile): 1
@@ -2713,6 +2732,7 @@ namespace gpu::renderer
                 VkClearColorValue v{};
                 vkCmdClearColorImage(s_cmd, rt->image.image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &range);
             }
+            s_targetEpoch++;
             FullBarrier();
 
             fprintf(stderr, "[renderer] EDRAM target: base %u %s format %u pitch %u -> %ux%u%s\n",
@@ -2755,6 +2775,18 @@ namespace gpu::renderer
             hit = { key, slot.get() };
             return slot.get();
         }
+
+        // Repeated resolves skip their copy (gpu/resolve_repeat.h);
+        // NFSMW_RESOLVE_REPEAT=0: every copy runs, as before.
+        bool s_skipRepeats = [] { const char* v = std::getenv("NFSMW_RESOLVE_REPEAT"); return !v || v[0] != '0'; }();
+        gpu::resolve_repeat::Book s_resolveRepeats;
+        uint64_t s_repeatsSkipped = 0;
+        // What a 32-bit resolve writes whole (gpu/resolve_cover.h): its
+        // fresh scaled slots there aren't filled first, and a texture of its
+        // surface that it covers takes its words whatever wrote the memory
+        // before. NFSMW_RESOLVE_COVER=0: as before.
+        bool s_resolveCover = [] { const char* v = std::getenv("NFSMW_RESOLVE_COVER"); return !v || v[0] != '0'; }();
+        uint64_t s_coverFillsSkipped = 0, s_coverStores = 0;
 
         // Current dynamic rendering pass.
         RenderTarget* s_passColor[4] = {};
@@ -3035,6 +3067,7 @@ namespace gpu::renderer
                 s_passQueryNext += 2;
             }
             s_vk->cmdBeginRendering(s_cmd, &ri);
+            s_targetEpoch++;
             s_passActive = true;
             s_stats.passes++;
             for (const PendingClear& pc : inPass)
@@ -5487,6 +5520,8 @@ void main()
                     if (s_textureVerify)
                         HashLoadedTexture(t);
                     s_stats.uploads++;
+                    if (s_profiling)
+                        ProfileMark(std::format("texture load {}x{} at {:08X}", t.width, t.height, base));
                 }
                 else if (s_textureVerify)
                 {
@@ -6185,6 +6220,7 @@ void main()
         // Clear a rectangle of a target (resolve with clear enabled).
         void ClearRect(RenderTarget* rt, const Rect& r)
         {
+            s_targetEpoch++;
             VkClearAttachment ca{};
             if (rt->depth)
             {
@@ -6381,6 +6417,7 @@ void main()
                 blit.dstOffsets[1] = { d.offset.x + int32_t(d.extent.width), d.offset.y + int32_t(d.extent.height), 1 };
                 vkCmdBlitImage(s_cmd, src->image.image, VK_IMAGE_LAYOUT_GENERAL, t->image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit,
                     VK_FILTER_NEAREST);
+                s_targetEpoch++;
                 FullBarrier();
             }
         }
@@ -6855,6 +6892,7 @@ void main()
                     region.dstSubresource = region.srcSubresource;
                     region.extent = { rt->width, rt->height, 1 };
                     vkCmdCopyImage(s_cmd, old->image.image, VK_IMAGE_LAYOUT_GENERAL, rt->image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+                    s_targetEpoch++;
                     FullBarrier();
                     s_lendCounts.copies++;
                     return;
@@ -7511,7 +7549,40 @@ void main()
                 : uint32_t(destInfo.copy_dest_format);
             bool copy = copyControl.copy_command == xenos::CopyCommand::kRaw ||
                 copyControl.copy_command == xenos::CopyCommand::kConvert;
-            if (copy && destBase != 0)
+            // The same copy again, with no target and no destination byte
+            // written since: its words are there already (gpu/resolve_repeat.h).
+            gpu::resolve_repeat::Key repeatKey;
+            bool repeated = false;
+            if (copy && destBase != 0 && s_skipRepeats && ResolveFormatSupported(format))
+            {
+                auto [extentStart, extentEnd] = ResolveExtent(r, (destPitch.copy_dest_pitch + 31) & ~31u, ResolveBppLog2(format));
+                const uint32_t rangeBase = (destBase & 0x1FFFFFFF) + extentStart, rangeBytes = extentEnd - extentStart;
+                auto [shiftX, shiftY] = TileShift();
+                repeatKey.source = uint64_t(reinterpret_cast<uintptr_t>(source));
+                repeatKey.sourceImage = uint64_t(reinterpret_cast<uintptr_t>(source->image.image));
+                repeatKey.x0 = r.x0;
+                repeatKey.y0 = r.y0;
+                repeatKey.x1 = r.x1;
+                repeatKey.y1 = r.y1;
+                repeatKey.destBase = destBase & 0x1FFFFFFF;
+                repeatKey.destPitch = (destPitch.copy_dest_pitch + 31) & ~31u;
+                repeatKey.format = format;
+                repeatKey.destInfo = s_regs[XE_GPU_REG_RB_COPY_DEST_INFO];
+                repeatKey.copyControl = gpu::resolve_repeat::CopyBits(copyControl.value);
+                repeatKey.surfaceInfo = surfaceInfo.value;
+                repeatKey.extra = (ScaledWanted(rangeBase, rangeBytes) ? 1u : 0u) | (uint32_t(shiftX & 0x7FFF) << 1) | (uint32_t(shiftY & 0x7FFF) << 16);
+                repeated = s_resolveRepeats.Repeats(repeatKey, s_targetEpoch, [&](uint64_t sequence) {
+                    writewatch::Quiesce();  // (a fault racing this has stored its sequence)
+                    return writewatch::WrittenSince(rangeBase, rangeBytes, sequence);
+                });
+                if (repeated)
+                {
+                    s_repeatsSkipped++;
+                    if (s_profiling)
+                        ProfileMark(std::format("resolve {}x{} fmt {} to {:08X}: a repeat, skipped", r.x1 - r.x0, r.y1 - r.y0, format, repeatKey.destBase));
+                }
+            }
+            if (copy && destBase != 0 && !repeated)
             {
                 auto [extentStart, extentEnd] = ResolveExtent(r, (destPitch.copy_dest_pitch + 31) & ~31u, ResolveBppLog2(format));
                 uint32_t rangeBase = (destBase & 0x1FFFFFFF) + extentStart, rangeBytes = extentEnd - extentStart;
@@ -7674,8 +7745,14 @@ void main()
                                 heldSlots.push_back({ page, slot });
                         }
                         FlushScaledTable();
-                        FillFreshSlots(fresh);
                         freshSlots = !fresh.empty();
+                        // (Pages this resolve writes whole get every sample from it.)
+                        const gpu::resolve_cover::Rect cr{ r.x0, r.y0, r.x1, r.y1 };
+                        if (s_resolveCover)
+                            s_coverFillsSkipped += std::erase_if(fresh, [&](const std::pair<uint32_t, uint32_t>& ps) {
+                                return gpu::resolve_cover::PageCovered(rc.destBase, rc.destPitch, cr, ps.first);
+                            });
+                        FillFreshSlots(fresh);
                         rc.scaledWrite = 1;
                         rc.slotWords = s_scaled.slotWords;
                         s_scaled.resolvedBytes += s_scaled.scale.HostPixels(rc.width, rc.height) * 4;
@@ -7715,15 +7792,24 @@ void main()
                             : t.offX != 0 || t.offY != 0 ? "texture offset"
                             : nullptr;
                     };
+                    // A texture of this surface (at its 0,0) all of whose
+                    // texels this resolve writes holds its words alone
+                    // afterwards, whatever wrote its memory meanwhile.
+                    auto covers = [&](const Texture& t, uint32_t width, uint32_t height) {
+                        return s_resolveCover && t.guestStart == rc.destBase && t.levels == 1 && !t.cube && t.layers == 1 &&
+                            gpu::resolve_cover::TextureCovered({ r.x0, r.y0, r.x1, r.y1 }, width, height);
+                    };
+                    bool fusedCovered = false, hostedCovered = false;
                     if (fuseHere && bl == 2 && s_resolveToTexture)
                         if (auto it = s_directByBase.find(rc.destBase); it != s_directByBase.end())
                         {
                             Texture& t = *(direct = it->second);
                             unfused = unfit(t);
+                            fusedCovered = !unfused && covers(t, t.width, t.height);
                             if (!unfused)
                                 unfused = !(t.guestStart >= rangeBase && uint64_t(t.guestStart) + t.guestSize <= uint64_t(rangeBase) + rangeBytes)
                                     ? "texture beyond the resolve's range"
-                                    : writewatch::WrittenSince(t.guestStart, t.guestSize, t.loadedSequence) ? "texture written since its load"
+                                    : !fusedCovered && writewatch::WrittenSince(t.guestStart, t.guestSize, t.loadedSequence) ? "texture written since its load"
                                     : nullptr;
                             if (!unfused)
                                 fused = &t;
@@ -7804,7 +7890,11 @@ void main()
                     const char* unhosted = !scaledWrite ? nullptr : !s_scaledFuse || !s_resolveToTexture ? "off"
                         : freshSlots ? "fresh slots" : "no scaled texture there";
                     uint32_t hostX = 0, hostY = 0;
-                    if (scaledWrite && source->scale == s_scaled.scale && s_scaledFuse && s_resolveToTexture && !freshSlots)
+                    // (Covered whole: as the 1x rule above; whole and 1.5x
+                    // scales only, where every host texel is a sample of a
+                    // guest pixel inside.)
+                    const bool coverScale = source->scale.x.den <= 2 && source->scale.y.den <= 2;
+                    if (scaledWrite && source->scale == s_scaled.scale && s_scaledFuse && s_resolveToTexture && (!freshSlots || (s_resolveCover && coverScale)))
                         for (auto it = s_scaledByStart.upper_bound(rc.destBase); !hosted && it != s_scaledByStart.begin();)
                         {
                             if (rc.destBase - (--it)->first >= s_maxScaledSize)
@@ -7814,15 +7904,19 @@ void main()
                                 continue;
                             uint32_t rel = rc.destBase - t.guestStart, tilesPerRow = std::max(t.pitch >> 5, 1u);
                             uint32_t x = (rel >> 12) % tilesPerRow * 32, y = (rel >> 12) / tilesPerRow * 32;
+                            const bool whole = coverScale && covers(t, t.guestWidth, t.guestHeight);
                             const char* reason = !(t.uploaded && t.storeView && t.scaled) ? "texture not loaded"
                                 : t.pitch != rc.destPitch ? "pitch differs"
                                 : rel % 4096 != 0 ? "not whole tiles into the texture"
                                 : x + uint32_t(r.x1) > rc.destPitch ? "beyond the texture's columns"
                                 : !(rangeBase >= t.guestStart && uint64_t(rangeBase) + rangeBytes <= uint64_t(t.guestStart) + t.guestSize)
                                 ? "beyond the texture"
-                                : writewatch::WrittenSince(t.guestStart, t.guestSize, t.loadedSequence) ? "texture written since its load"
-                                : !ScaledSurfaceValid(t.guestStart, t.guestSize, t.scaledSig) ? "texture's pages not all current"
+                                : freshSlots && !whole ? "fresh slots"
+                                : !whole && writewatch::WrittenSince(t.guestStart, t.guestSize, t.loadedSequence) ? "texture written since its load"
+                                : !whole && !ScaledSurfaceValid(t.guestStart, t.guestSize, t.scaledSig) ? "texture's pages not all current"
                                 : nullptr;
+                            if (!reason)
+                                hostedCovered = whole;
                             if (!reason)
                             {
                                 hosted = &t;
@@ -7850,11 +7944,18 @@ void main()
                         });
                         if (!heldSlots.empty())
                         {
-                            FillFreshSlots(heldSlots);
+                            std::vector<std::pair<uint32_t, uint32_t>> refill = heldSlots;
+                            const gpu::resolve_cover::Rect cr{ r.x0, r.y0, r.x1, r.y1 };
+                            if (s_resolveCover && !hold)  // (held: the pool isn't written)
+                                s_coverFillsSkipped += std::erase_if(refill, [&](const std::pair<uint32_t, uint32_t>& ps) {
+                                    return gpu::resolve_cover::PageCovered(rc.destBase, rc.destPitch, cr, ps.first);
+                                });
+                            FillFreshSlots(refill);
                             for (const auto& ps : heldSlots)
                                 s_scaled.pageHeld[ps.first] = nullptr;
                         }
                     }
+                    s_coverStores += (fused && fusedCovered) + (hosted && hostedCovered);
                     if (hosted)
                     {
                         rc.hostWrite = hold ? 2 : 1;
@@ -8019,6 +8120,11 @@ void main()
                             FullBarrier();  // (above 1x: as before)
                         else
                             ResolveBarrier(rangeBase, rangeBytes, fused ? fused->guestStart : 0);
+                        if (s_profiling)
+                            ProfileMark(std::format("resolve {}x{} fmt {} {} src b{} p{} {}x{} dest {:08X}{}{}{}{}{}", rc.width, rc.height, format,
+                                depthSource ? "depth" : "color", source->base, source->pitch, source->width, source->height, rc.destBase,
+                                scaledWrite ? " scaled" : "", coalesced ? " coalesced" : "", fused ? " fused" : "",
+                                hosted ? (rc.hostWrite == 2 ? " hosted(held)" : " hosted") : "", freshSlots ? " fresh-slots" : ""));
                         if (defer)
                         {
                             // NFSMW_SHADOW_VERIFY: the resolve ran (guest memory and
@@ -8059,6 +8165,9 @@ void main()
                     uint64_t written = writewatch::MarkWritten(rangeBase, rangeBytes, writewatch::Writer::kResolve, rc.destBase);
                     if (defer)
                         s_lends.back().written = written;
+                    // (Deferred and direct shadow resolves keep state of their own: never skipped.)
+                    if (s_skipRepeats)
+                        s_resolveRepeats.Record(repeatKey, s_targetEpoch, defer || directShadowResolve ? 0 : written);
                     if (directShadowResolve && !(s_exp & 2))
                     {
                         uint64_t writeSequence = writewatch::WriteSequence(rangeBase, rangeBytes);
@@ -8603,6 +8712,8 @@ void main()
                 vkCmdPushConstants(s_cmd, s_scaledStoreLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
                 vkCmdDispatch(s_cmd, (t.width + 7) / 8, (t.height + 7) / 8, 1);
                 ComputeBarrier();
+                if (s_profiling)
+                    ProfileMark(std::format("scaled untile {}x{} at {:08X} (direct)", t.width, t.height, base));
                 return;
             }
             vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_scaledUntilePipeline);
@@ -8618,6 +8729,8 @@ void main()
             region.imageExtent = { t.width, t.height, 1 };
             vkCmdCopyBufferToImage(s_cmd, s_scaled.scratch, t.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
             FullBarrier();
+            if (s_profiling)
+                ProfileMark(std::format("scaled untile {}x{} at {:08X} (scratch)", t.width, t.height, base));
         }
 
         void FillFreshSlots(const std::vector<std::pair<uint32_t, uint32_t>>& fresh)
@@ -8653,6 +8766,8 @@ void main()
                 vkCmdPushConstants(s_cmd, s_scaledFillLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
                 vkCmdDispatch(s_cmd, (count * 1024 + 63) / 64, 1, 1);
                 FullBarrier();
+                if (s_profiling)
+                    ProfileMark(std::format("fill {} fresh scaled slots", count));
             }
         }
 
@@ -13023,6 +13138,39 @@ void main()
             ZpdOnSwap(frame);
         if (s_logShadowMap)
             ShadowMapProbeOnSwap();
+        // NFSMW_AB=<mask>: A/B in one run, for measurements: the features of
+        // the mask (1: repeated resolves skipped, 2: what resolves write
+        // whole) are off in every other
+        // 120-frame window. Each window's state is said before its [perf]
+        // line.
+        static const uint32_t abMask = [] { const char* v = std::getenv("NFSMW_AB"); return v ? uint32_t(std::atoi(v)) : 0u; }();
+        static const bool abRepeats = s_skipRepeats, abCover = s_resolveCover;
+        if (abMask && frame % 120 == 0)
+        {
+            fprintf(stderr, "[ab] window ending: %s\n",
+                ((abMask & 1) && !s_skipRepeats) || ((abMask & 2) && !s_resolveCover) ? "off" : "on");
+            const bool off = (frame / 120) % 2 != 0;
+            if (abMask & 2)
+                s_resolveCover = abCover && !off;
+            if (abMask & 1)
+            {
+                s_skipRepeats = abRepeats && !off;
+                s_resolveRepeats.Clear();
+            }
+        }
+        // Repeated resolves skipped (gpu/resolve_repeat.h), per frame of the
+        // window ending here, before its [perf] line.
+        if (frame % 120 == 0)
+        {
+            static uint64_t last = 0, lastFills = 0, lastStores = 0;
+            if (s_repeatsSkipped != last || s_coverFillsSkipped != lastFills || s_coverStores != lastStores)
+                fprintf(stderr, "[resolve] per frame: %.1f repeats skipped, %.1f scaled slots not filled (written whole), %.1f stores into textures "
+                    "written whole\n", double(s_repeatsSkipped - last) / 120, double(s_coverFillsSkipped - lastFills) / 120,
+                    double(s_coverStores - lastStores) / 120);
+            last = s_repeatsSkipped;
+            lastFills = s_coverFillsSkipped;
+            lastStores = s_coverStores;
+        }
         // NFSMW_PASS_BARRIER: per frame of the window ending here, with the
         // level it ran at, before its [perf] line. Vertex barriers cost a
         // pass's overlap (a split: a pass too).
@@ -13165,6 +13313,7 @@ void main()
         {
             s_profiling = true;
             s_passInfos.clear();
+            s_gapMarks.clear();
             s_gapLast = { s_stats.resolves, s_stats.uploads, s_stats.submits, writewatch::GetGuardStats().uploadBytes };
             s_passQueryNext = 0;
             return;
@@ -13179,8 +13328,20 @@ void main()
         double total = 0, between = 0;
         uint64_t lastEnd = 0;
         fprintf(stderr, "[profile] frame %d: %zu passes\n", s_profileFrame, s_passInfos.size());
+        size_t mark = 0, passIndex = 0;
         for (const PassInfo& pi : s_passInfos)
         {
+            for (; mark < s_gapMarks.size() && s_gapMarks[mark].pass <= passIndex; mark++)
+            {
+                uint64_t t = 0;
+                vkGetQueryPoolResults(s_dev, s_passQueries, s_gapMarks[mark].query, 1, sizeof(t), &t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+                double us = lastEnd && t > lastEnd ? double(t - lastEnd) * s_timestampPeriod / 1000.0 : 0.0;
+                if (t > lastEnd)
+                    lastEnd = t;
+                between += us;
+                fprintf(stderr, "[profile]     gap %7.1f us  %s\n", us, s_gapMarks[mark].desc.c_str());
+            }
+            passIndex++;
             uint64_t ts[2] = {};
             vkGetQueryPoolResults(s_dev, s_passQueries, pi.query, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
             double us = ts[1] > ts[0] ? double(ts[1] - ts[0]) * s_timestampPeriod / 1000.0 : 0.0;

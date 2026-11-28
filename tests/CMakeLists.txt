@@ -598,3 +598,9 @@ sb_test(pipeline_list_test)
 # The saved pipeline cache is made on a thread of its own: no cache until then,
 # and the loader may outlive the renderer (gpu/pipeline_cache_load.h, header only).
 sb_test(pipeline_cache_load_test)
+# What a 32-bit resolve writes whole (gpu/resolve_cover.h, header only), against the
+# resolve shader's tiled addresses; renderer.cpp is read to check Resolve uses it.
+sb_test(resolve_cover_test ARGS ${RT}/gpu/renderer.cpp)
+# Repeated resolves skip their copy (gpu/resolve_repeat.h, header only); renderer.cpp
+# is read to check Resolve uses the book and every target write moves its epoch.
+sb_test(resolve_repeat_test ARGS ${RT}/gpu/renderer.cpp)
