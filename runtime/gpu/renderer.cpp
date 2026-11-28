@@ -10620,6 +10620,11 @@ void main()
         {
             gpu::draw_clear::Draw dd;
             dd.rectangleList = initiator.prim_type == xenos::PrimitiveType::kRectangleList;
+            // Depth-only draws run no pixel shader: alpha test and the bound
+            // shader can't stop their clear (gpu/draw_clear.h).
+            // NFSMW_DRAW_CLEAR_DEPTH_ONLY=0: the old rule (they could).
+            static const bool depthOnlyClears = [] { const char* v = std::getenv("NFSMW_DRAW_CLEAR_DEPTH_ONLY"); return !v || v[0] != '0'; }();
+            dd.pixelShaderRuns = !depthOnlyClears || gpu::RunsGuestPixelShader(edramMode, s_depthOnlyGuestPs);
             dd.pixelShaderSamples = (s_ps->info.texture2DMask | s_ps->info.texture3DMask | s_ps->info.textureCubeMask) != 0;
             dd.pixelShaderKills = s_ps->info.usesKill;
             dd.pixelShaderWritesDepth = s_ps->info.writesDepth;

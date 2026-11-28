@@ -89,10 +89,21 @@ namespace gpu::draw_clear
         return r;
     }
 
+    // A draw in depth-only EDRAM mode runs no pixel shader (depth_only.h): the
+    // shader still bound and the alpha test state left on by earlier draws
+    // can't kill its pixels. Deathly Hallows - Part 1 clears its 1024x1024
+    // shadow cascade surface (1x, pitch 1040) between cascades as a 64-column
+    // 1x rectangle (960-1023) and a 480x512 4x one at pitch 520 (columns
+    // 0-959), depth-only, with alpha test still on from the casters. Taken as
+    // not a clear, the 4x part never reached the 1x layout: each cascade kept
+    // the depths of the ones drawn before it, and those shadows slid and
+    // flickered with the camera as the cascades followed it.
+    //
     // The draw's state that decides whether it is a clear.
     struct Draw
     {
         bool rectangleList = false;
+        bool pixelShaderRuns = true;      // false in depth-only mode: the next four can't apply
         bool pixelShaderSamples = false;  // fetches a texture
         bool pixelShaderKills = false;
         bool pixelShaderWritesDepth = false;
@@ -117,7 +128,8 @@ namespace gpu::draw_clear
     inline Cleared Classify(const Draw& d)
     {
         Cleared c;
-        if (!d.rectangleList || d.pixelShaderSamples || d.pixelShaderKills || d.pixelShaderWritesDepth || d.alphaTest)
+        if (!d.rectangleList ||
+            (d.pixelShaderRuns && (d.pixelShaderSamples || d.pixelShaderKills || d.pixelShaderWritesDepth || d.alphaTest)))
             return c;
         for (uint32_t i = 0; i < 4; i++)
             if (((d.colorWriteMask >> (4 * i)) & 0xF) == 0xF && (d.blendControl[i] & 0x1FFF1FFF) == kBlendOff)

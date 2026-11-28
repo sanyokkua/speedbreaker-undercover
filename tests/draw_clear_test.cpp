@@ -80,6 +80,31 @@ int main(int argc, char** argv)
         CHECK(!Classify(d).depth && !Classify(d).stencil);
     }
     {
+        // Deathly Hallows - Part 1's shadow cascade clear (draw log: depth-only
+        // EDRAM mode, init 00030088 rectangle list, cmask 0, dctl 00000076)
+        // between two cascades: the casters before it left alpha test on
+        // (cctl 8700000e). Depth-only draws run no pixel shader, so the alpha
+        // test (and the bound shader's kills, fetches and depth export) can't
+        // stop it: it is a depth clear. It was not, its 4x part (1x columns
+        // 0-959) never reached the 1x cascade, and each cascade kept the
+        // casters of the ones before it.
+        Draw d;
+        d.rectangleList = true;
+        d.pixelShaderRuns = false;
+        d.alphaTest = true;
+        d.depthAttached = true;
+        d.depthControl = 0x00000076;
+        CHECK(Classify(d).depth && !Classify(d).stencil);
+        CHECK(Classify(d).colorTargets == 0);
+        d.pixelShaderKills = d.pixelShaderSamples = d.pixelShaderWritesDepth = true;
+        CHECK(Classify(d).depth);
+        // The same draw with its pixel shader run (colour+depth mode): the
+        // alpha test can kill it, so not a clear (as before).
+        d.pixelShaderRuns = true;
+        d.pixelShaderKills = d.pixelShaderSamples = d.pixelShaderWritesDepth = false;
+        CHECK(!Classify(d).Any());
+    }
+    {
         // 4x at pitch 640 and 1x at pitch 1280: 16 tiles a row both.
         CHECK(TilesPerRow(640, 2, false) == 16);
         CHECK(TilesPerRow(1280, 0, false) == 16);
@@ -133,6 +158,7 @@ int main(int argc, char** argv)
         ss << f.rdbuf();
         const std::string src = ss.str();
         CHECK(src.find("draw_clear::Classify(") != std::string::npos);
+        CHECK(src.find("dd.pixelShaderRuns = ") != std::string::npos);
         CHECK(src.find("PropagateDrawClear(") != std::string::npos);
         CHECK(src.find("r = dc::EdramBounds(r, src->base, src->pitch, msaa, is64);") != std::string::npos);
         CHECK(src.find("HostRect(src->scale, sr.x0, sr.y0, sr.x1, sr.y1)") != std::string::npos);
