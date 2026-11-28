@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SpeedBreaker <noreply@localhost>
+Date: Fri, 27 Nov 2026 19:00:00 +0100
+Subject: [PATCH] bdzlr/bdnzlr do not end a function
+
+- The function analysis took a bclr whose BO has 0x10 set (ignore the
+  condition) as an unconditional blr. bdzlr/bdnzlr have 0x10 set too, but
+  they decrement CTR and fall through when it isn't zero: only
+  BO & 0x14 == 0x14 is unconditional.
+- HP: Deathly Hallows - Part 1's CRT memset (sub_82355E40, a leaf with no
+  .pdata) ends in "stb; bdzlr; stb; bdzlr; stb; blr". The function was cut
+  after the first bdzlr, so a memset whose tail after the last word is 2 or 3
+  bytes left the last 1-2 bytes unset. Wwise's random containers then started
+  with stale "blocked" bits, picked items past the end of their playlists and
+  wrote past their bit arrays: heap corruption in Wwise's pool and the crash
+  after 3-4 minutes of combat.
+---
+--- a/XenonAnalyse/function.cpp
++++ b/XenonAnalyse/function.cpp
+@@ -180,8 +180,10 @@
+                 }
+                 else if (op == PPC_OP_CTR)
+                 {
+-                    // 5th bit of BO tells cpu to ignore the counter, which is a blr/bctr otherwise it's conditional
+-                    const bool conditional = !(PPC_BO(instruction) & 0x10);
++                    // Unconditional only when BO ignores both the condition (0x10)
++                    // and the counter (0x04): bdzlr/bdnzlr (BO 1a01t/1a00t) decrement
++                    // CTR and fall through when it isn't zero.
++                    const bool conditional = (PPC_BO(instruction) & 0x14) != 0x14;
+                     if (conditional)
+                     {
+                         // right block's just going to return

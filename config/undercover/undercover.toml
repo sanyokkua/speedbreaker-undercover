@@ -1,6 +1,6 @@
 # XenonRecomp config for NFS: Undercover (Xbox 360, USA, En/Fr/Es)
 # default.xex SHA-256 97ac0c072253d46458dc6d57c6609922adbd3b9658216940282c361ad575e221
-# Paths are relative to this file. Needs XenonRecomp with patches 0001-0014 (0014: a dropped branch is FATAL).
+# Paths are relative to this file. Needs XenonRecomp with patches 0001-0014 and 0019 (0014: a dropped branch is FATAL; 0019: bdzlr/bdnzlr don't end a function).
 #
 # Regenerate the generated blocks and switch tables (from the repo root):
 #   tools/XenonRecomp/build/XenonAnalyse/XenonAnalyse game-undercover/files/default.xex game-undercover/survey/switch_tables.raw.toml
