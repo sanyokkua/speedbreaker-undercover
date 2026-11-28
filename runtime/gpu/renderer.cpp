@@ -865,6 +865,24 @@ namespace gpu::renderer
         // captures (LogOcclusionCounts, any thread).
         std::mutex s_zpdLatestMutex;
         std::map<uint32_t, std::pair<uint32_t, uint64_t>> s_zpdLatest;
+        // The provisional END reports (zpd::LastCounts), under s_submitMutex.
+        // NFSMW_OCCLUSION_PROVISIONAL=0: none, an END's report stays pending
+        // until its count lands (A/B; the hidden lights' flares of DH1 at
+        // 60 fps come back).
+        const bool s_zpdProvisional = [] { const char* v = std::getenv("NFSMW_OCCLUSION_PROVISIONAL"); return !v || v[0] != '0'; }();
+        zpd::LastCounts s_zpdLast;
+        std::atomic<uint64_t> s_zpdProvisionalStores{ 0 };
+        // An END report of `count` (the completion thread's ZpdStore, or the
+        // command processor's provisional one, under s_submitMutex), as the
+        // GPU's stores are, around the write watch's guard (opened once for
+        // its 8 dwords).
+        void ZpdStoreReport(uint32_t address, uint32_t count)
+        {
+            uint8_t* host = s_sharedHost + address;
+            writewatch::GpuThreadWrite(host, 32, [host, count] {
+                zpd::StoreEnd(count, [host](uint32_t offset, uint32_t value) { memcpy(host + offset, &value, 4); });
+            });
+        }
         // NFSMW_LOG_ZPD=<lines>: each BEGIN, counted draw, segment and END,
         // that many lines at most (any thread).
         const int64_t s_zpdLogLines = [] { const char* v = std::getenv("NFSMW_LOG_ZPD"); return v ? int64_t(std::atoll(v)) : int64_t(0); }();
@@ -1133,10 +1151,8 @@ namespace gpu::renderer
             uint64_t raw = 0;
             // A runaway count stays one the game rejects (zpd::EndCount).
             const uint32_t count = zpd::EndCount(s_zpdResults->Sum(end.s0, end.s1, lost, &raw));
-            uint8_t* host = s_sharedHost + end.address;
-            writewatch::GpuThreadWrite(host, 32, [host, count] {
-                zpd::StoreEnd(count, [host](uint32_t offset, uint32_t value) { memcpy(host + offset, &value, 4); });
-            });
+            ZpdStoreReport(end.address, count);
+            s_zpdLast.Put(end.address, count);
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - end.queued).count();
             s_zpdStores.stored++;
             s_zpdStores.nonZero += count != 0;
@@ -9971,10 +9987,13 @@ void main()
             }
             const ZpdCounts& c = s_zpdCounts;
             uint64_t stored = stores.stored - lastStores.stored;
-            fprintf(stderr, "[zpd] per frame: %.1f ZPDs, %.1f ENDs (%.1f with samples), %.1f counted draws in %.1f segments"
+            static uint64_t lastProvisional = 0;
+            const uint64_t provisional = s_zpdProvisionalStores.load();
+            fprintf(stderr, "[zpd] per frame: %.1f ZPDs, %.1f ENDs (%.1f with samples, %.1f provisional first), %.1f counted draws in %.1f segments"
                 " | CP -> store %.2f ms avg, %.2f ms max | totals: %llu unmatched ENDs, %llu dropped and %llu replaced brackets,"
                 " %llu other reports, %llu not available, %llu over the queries, %llu lost, %llu outside the viewport, %llu not clamped\n",
                 double(c.zpds - last.zpds) / 120, double(stored) / 120, double(stores.nonZero - lastStores.nonZero) / 120,
+                double(provisional - lastProvisional) / 120,
                 double(c.draws - last.draws) / 120, double(c.segments - last.segments) / 120,
                 stored ? (stores.delaySum - lastStores.delaySum) / double(stored) : 0.0, stores.delayMax,
                 (unsigned long long)c.unmatched, (unsigned long long)c.dropped, (unsigned long long)c.replaced,
@@ -9982,6 +10001,7 @@ void main()
                 (unsigned long long)stores.lost, (unsigned long long)c.clamped, (unsigned long long)c.unclamped);
             last = c;
             lastStores = stores;
+            lastProvisional = provisional;
         }
 
 #ifdef _WIN32
@@ -12669,8 +12689,10 @@ void main()
     // it ready, lands last. Tile 0 holds the whole count (untiled
     // rendering: later tiles' draws are skipped, their brackets count 0),
     // as GetData sums the tiles. A result lands a frame or two after its
-    // draw; the game polls without waiting and keeps its value meanwhile,
-    // as on the console. Nothing here waits.
+    // draw; meanwhile the report holds the count last stored there
+    // (zpd::LastCounts): D3D's GetData takes a pending one as 1 sample,
+    // which a game that polls (the NFS sun glare) skips but one that reads
+    // once (DH1's lens flares, two frames on) takes. Nothing here waits.
     bool ZpassDone(uint32_t address)
     {
         if (!s_zpdOn)
@@ -12729,7 +12751,17 @@ void main()
             else if (!s_inFlight.empty())
                 s_submissions[s_inFlight.back()].zpdEnds.push_back(end);
             else
+            {
                 ZpdStore(end);
+                return true;
+            }
+            // Until it lands, the count last stored here (zpd::LastCounts):
+            // GetData would take the report as pending and report a sample.
+            if (uint32_t last; s_zpdProvisional && s_zpdLast.Get(address, &last))
+            {
+                ZpdStoreReport(address, last);
+                s_zpdProvisionalStores++;
+            }
             return true;
         }
         default:

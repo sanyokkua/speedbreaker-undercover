@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <unordered_map>
 
 namespace gpu::zpd
 {
@@ -236,5 +237,41 @@ namespace gpu::zpd
             uint64_t id = 0, guest = 0, raw = 0;
         };
         Entry m_entries[kSize];
+    };
+
+    // The last count stored at each END address: the provisional report.
+    // A counted END is stored when its submission completes, a frame or two
+    // after the command processor reaches it, while GetData never waits: a
+    // read before then is pending, and D3D's GetData then reports 1 sample
+    // (visible). DH1 reads each lens flare's query once, two frames after
+    // its Issue, and takes the 1: at 60 fps behind a 2x GPU (about 30 ms
+    // from the END to its store) a light behind a wall or a character got
+    // its flare. So when the command processor reaches an END its report
+    // first holds the count last stored there (the same query, a few frames
+    // back), then the real one when it lands. Bounded: a new address past
+    // kMax starts the book over.
+    class LastCounts
+    {
+    public:
+        static constexpr size_t kMax = 4096;
+
+        void Put(uint32_t address, uint32_t count)
+        {
+            if (m_counts.size() >= kMax && !m_counts.contains(address))
+                m_counts.clear();
+            m_counts[address] = count;
+        }
+        bool Get(uint32_t address, uint32_t* count) const
+        {
+            auto it = m_counts.find(address);
+            if (it == m_counts.end())
+                return false;
+            *count = it->second;
+            return true;
+        }
+        size_t Size() const { return m_counts.size(); }
+
+    private:
+        std::unordered_map<uint32_t, uint32_t> m_counts;
     };
 }

@@ -504,6 +504,52 @@ void Runaway()
     CHECK(r.ready && !r.Accepted(), "saturated: rejected (%u)", r.count);
 }
 
+// An END whose count lands after the game reads it (DH1 reads each lens
+// flare's query once, two frames after its Issue; at 60 fps behind a 2x GPU
+// the count is not in yet): GetData takes it as pending and reports 1
+// sample, so a hidden light's flare is drawn. The provisional report, stored
+// when the command processor reaches the END, holds the last count stored at
+// that address instead.
+void Provisional()
+{
+    printf("provisional END reports\n");
+    LastCounts last;
+    uint32_t count = 99;
+    CHECK(!last.Get(0x40, &count) && count == 99, "nothing stored yet: no provisional count");
+    last.Put(0x40, 0);
+    last.Put(0x80, 37);
+    CHECK(last.Get(0x40, &count) && count == 0, "0x40: 0 (%u)", count);
+    CHECK(last.Get(0x80, &count) && count == 37, "0x80: 37 (%u)", count);
+    last.Put(0x80, 5);
+    CHECK(last.Get(0x80, &count) && count == 5 && last.Size() == 2, "0x80 replaced: 5 (%u), 2 kept", count);
+
+    // A hidden light's query, read before its count is in.
+    Memory m(256, 0);
+    const std::vector<uint32_t> tiles = { 0x40 };
+    Rearm(m, 0x40);
+    GetDataResult r = GetData(m, m, tiles);
+    CHECK(!r.ready && r.count == 1, "late END without a provisional report: pending, 1 sample (visible)");
+    uint32_t previous = 1;
+    CHECK(last.Get(0x40, &previous), "a count was stored at 0x40 before");
+    StoreEnd(previous, [&](uint32_t offset, uint32_t value) { StoreHost(m, 0x40 + offset, value); });
+    r = GetData(m, m, tiles);
+    CHECK(r.Accepted() && r.count == 0, "with it: ready, the last count, 0 (%u)", r.count);
+    // The real count overwrites it when it lands.
+    StoreEnd(3, [&](uint32_t offset, uint32_t value) { StoreHost(m, 0x40 + offset, value); });
+    r = GetData(m, m, tiles);
+    CHECK(r.Accepted() && r.count == 3, "then the real count, 3 (%u)", r.count);
+
+    // Bounded: past kMax addresses it starts over, never grows.
+    LastCounts many;
+    for (uint32_t i = 0; i < LastCounts::kMax; i++)
+        many.Put(i * 64, i);
+    CHECK(many.Size() == LastCounts::kMax, "kMax kept (%zu)", many.Size());
+    many.Put(64, 7);
+    CHECK(many.Size() == LastCounts::kMax && many.Get(64, &count) && count == 7, "a known address replaced in place (%zu)", many.Size());
+    many.Put(LastCounts::kMax * 64, 1);
+    CHECK(many.Size() == 1 && many.Get(LastCounts::kMax * 64, &count) && count == 1, "a new one past kMax: cleared first (%zu)", many.Size());
+}
+
 int main()
 {
     ClassifyAndNormalize();
@@ -515,6 +561,7 @@ int main()
     Ring();
     Unordered();
     Runaway();
+    Provisional();
     printf(g_failures ? "%d FAILED\n" : "all passed\n", g_failures);
     return g_failures ? 1 : 0;
 }
